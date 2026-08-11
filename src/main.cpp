@@ -582,7 +582,7 @@ int main(){
     vector<string> X_names = { "request_cnt", "time_limit", "tao",  "fidelity_threshold" , "avg_memory","hop_count","swap_prob" };
     //vector<string> X_names = {"Zmin","bucket_eps","time_eta"};
     vector<string> Y_names = {"fidelity_gain", "succ_request_cnt","actual_req_cnt"};
-    vector<string> algo_names = {"ZFA_UB","ZFA2","MyAlgo1", "MyAlgo3"};
+    vector<string> algo_names = {"ZFA_UB", "ZFA", "ZFA2", "MyAlgo1", "MyAlgo3"};
     if(EFiRAP::gurobi_available()) {
         algo_names.push_back("EFiRAP");
     } else {
@@ -751,6 +751,9 @@ int main(){
                     algorithms.emplace_back(new WernerAlgo3(graph,requests,paths));  // ZFA_UB (LP upper bound with purify)
                     DBG_HERE("after new WernerAlgo3");
                     DBG_mem("after_new_WernerAlgo3");
+                    DBG_HERE("before new WernerAlgo");
+                    algorithms.emplace_back(new WernerAlgo(graph, requests, paths));  // ZFA
+                    DBG_HERE("after new WernerAlgo");
                     {
                         DBG_HERE("before new WernerAlgo2");
                         auto* zfa2 = new WernerAlgo2(graph,requests,paths);
