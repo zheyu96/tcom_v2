@@ -7,7 +7,7 @@ algorithm = Algorithm/MyAlgo1/MyAlgo1.o Algorithm/MyAlgo2/MyAlgo2.o Algorithm/My
             Algorithm/MyAlgo4/MyAlgo4.o Algorithm/MyAlgo5/MyAlgo5.o Algorithm/MyAlgo6/MyAlgo6.o \
             Algorithm/WernerAlgo/WernerAlgo.o Algorithm/WernerAlgo2/WernerAlgo2.o \
             Algorithm/WernerAlgo3/WernerAlgo3.o \
-            Algorithm/WernerAlgo_UB/WernerAlgo_UB.o
+            Algorithm/WernerAlgo_UB/WernerAlgo_UB.o Algorithm/EFiRAP/EFiRAP.o
 
 # 時間量測專用演算法物件
 algorithm_zfa = Algorithm/WernerAlgo_time/WernerAlgo_time.o 
@@ -21,10 +21,30 @@ routing = Network/PathMethod/PathMethodBase/PathMethod.o Network/PathMethod/Gree
 # 編譯旗標
 gcc_flag = -O3 -fopenmp -march=native --std=c++17
 
-# Gurobi 設定 (如果沒有安裝 Gurobi，留空即可，REPS 會編譯失敗但不影響主程式)
-# gurobi_path = /home/oba/danger/gurobi951/linux64
-# gurobi_flag = -I$(gurobi_path)/include/ -L$(gurobi_path)/lib/ -lgurobi_c++ -lgurobi95
+# Gurobi configuration. GUROBI_HOME normally points to a directory such as
+# /opt/gurobi1200/linux64. Both variables can also be supplied to make:
+#   make gurobi_path=/home/oba/danger/gurobi951/linux64 gurobi_lib=gurobi95
+gurobi_path ?= $(GUROBI_HOME)
+gurobi_detected_so := $(firstword $(wildcard $(gurobi_path)/lib/libgurobi[0-9]*.so))
+gurobi_detected_lib := $(patsubst lib%.so,%,$(notdir $(gurobi_detected_so)))
+gurobi_lib ?= $(gurobi_detected_lib)
+
+ifneq ($(strip $(gurobi_path)),)
+ifneq ($(strip $(gurobi_lib)),)
+gurobi_flag = -I$(gurobi_path)/include -L$(gurobi_path)/lib -lgurobi_c++ -l$(gurobi_lib)
+else
+$(error Gurobi found at $(gurobi_path), but its versioned libgurobi*.so was not detected; set gurobi_lib explicitly)
+endif
+else
 gurobi_flag =
+endif
+
+# Passing a non-empty gurobi_flag enables EFiRAP's Gurobi-backed EPS model.
+ifneq ($(strip $(gurobi_flag)),)
+efirap_gurobi_define = -DEFIRAP_USE_GUROBI
+else
+efirap_gurobi_define =
+endif
 
 # --- 主要執行目標 ---
 
@@ -88,6 +108,8 @@ Algorithm/WernerAlgo3/WernerAlgo3.o: Algorithm/WernerAlgo3/WernerAlgo3.cpp Algor
 	g++ -c $(gcc_flag) Algorithm/WernerAlgo3/WernerAlgo3.cpp -o Algorithm/WernerAlgo3/WernerAlgo3.o
 Algorithm/WernerAlgo_UB/WernerAlgo_UB.o: Algorithm/WernerAlgo_UB/WernerAlgo_UB.cpp Algorithm/WernerAlgo_UB/WernerAlgo_UB.h config.h
 	g++ -c $(gcc_flag) Algorithm/WernerAlgo_UB/WernerAlgo_UB.cpp -o Algorithm/WernerAlgo_UB/WernerAlgo_UB.o
+Algorithm/EFiRAP/EFiRAP.o: Algorithm/EFiRAP/EFiRAP.cpp Algorithm/EFiRAP/EFiRAP.h Network/Purification/Purification.h config.h
+	g++ -c $(gcc_flag) $(efirap_gurobi_define) $(gurobi_flag) Algorithm/EFiRAP/EFiRAP.cpp -o Algorithm/EFiRAP/EFiRAP.o
 
 # 時間量測版本演算法編譯規則
 Algorithm/WernerAlgo_time/WernerAlgo_time.o: Algorithm/WernerAlgo_time/WernerAlgo_time.cpp Algorithm/WernerAlgo_time/WernerAlgo_time.h config.h

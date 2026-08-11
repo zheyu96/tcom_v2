@@ -15,6 +15,7 @@
 #include "Algorithm/WernerAlgo2/WernerAlgo2.h"
 #include "Algorithm/WernerAlgo3/WernerAlgo3.h"
 #include "Algorithm/WernerAlgo_UB/WernerAlgo_UB.h"
+#include "Algorithm/EFiRAP/EFiRAP.h"
 #include "Network/PathMethod/PathMethodBase/PathMethod.h"
 #include "Network/PathMethod/Greedy/Greedy.h"
 #include "Network/PathMethod/QCAST/QCAST.h"
@@ -582,6 +583,12 @@ int main(){
     //vector<string> X_names = {"Zmin","bucket_eps","time_eta"};
     vector<string> Y_names = {"fidelity_gain", "succ_request_cnt","actual_req_cnt"};
     vector<string> algo_names = {"ZFA_UB","ZFA2","MyAlgo1", "MyAlgo3"};
+    if(EFiRAP::gurobi_available()) {
+        algo_names.push_back("EFiRAP");
+    } else {
+        cerr << "[EFiRAP] Gurobi support is not enabled; skipping EFiRAP."
+             << endl;
+    }
     // init result
 
 
@@ -752,6 +759,12 @@ int main(){
                         string exp_label = X_name + "=" + to_string(change_value) + " Round=" + to_string(r);
                         zfa2->set_experiment_label(exp_label);
                         algorithms.emplace_back(zfa2);
+                    }
+                    if(EFiRAP::gurobi_available()) {
+                        DBG_HERE("before new EFiRAP");
+                        algorithms.emplace_back(
+                            new EFiRAP(graph, requests, paths, 10));
+                        DBG_HERE("after new EFiRAP");
                     }
                     if(X_name!="Zmin"&&X_name!="bucket_eps"&&X_name!="time_eta"){
                         DBG_HERE("before new MyAlgo1");
