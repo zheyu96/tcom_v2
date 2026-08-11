@@ -1,6 +1,15 @@
 #ifndef __EFIRAP_H
 #define __EFIRAP_H
 
+// WernerAlgo*.h defines `double` as a preprocessor macro and does not restore
+// it. Isolate EFiRAP's public ABI from that leaking macro so EFiRAP.h has the
+// same constructor signature regardless of include order.
+#ifdef double
+#pragma push_macro("double")
+#undef double
+#define EFIRAP_RESTORE_DOUBLE_MACRO
+#endif
+
 #include "../AlgorithmBase/AlgorithmBase.h"
 #include "../../Network/Graph/Graph.h"
 #include "../../config.h"
@@ -105,5 +114,10 @@ private:
     vector<vector<int>> solve_eps_with_gurobi();
     void reserve_candidate(const Candidate& candidate);
 };
+
+#ifdef EFIRAP_RESTORE_DOUBLE_MACRO
+#pragma pop_macro("double")
+#undef EFIRAP_RESTORE_DOUBLE_MACRO
+#endif
 
 #endif
