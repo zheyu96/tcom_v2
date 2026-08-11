@@ -766,7 +766,7 @@ int main(){
                     if(EFiRAP::gurobi_available()) {
                         DBG_HERE("before new EFiRAP");
                         algorithms.emplace_back(
-                            new EFiRAP(graph, requests, paths, 10));
+                            new EFiRAP(graph, requests, paths, 5));
                         DBG_HERE("after new EFiRAP");
                     }
                     if(X_name!="Zmin"&&X_name!="bucket_eps"&&X_name!="time_eta"){
