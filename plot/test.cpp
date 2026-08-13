@@ -2,7 +2,7 @@
 using namespace std;
 const double EPS = 1e-9;
 const double INF = 1e9;
-const double mT = 10;
+const double mT = 0.04;
 const double A = 0.25, B = 0.75;
 double n = 1;
 const double tau = 0.2;

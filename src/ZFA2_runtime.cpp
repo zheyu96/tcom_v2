@@ -128,7 +128,7 @@ int main() {
             system(cmd.c_str());
         }
 
-        Graph temp_g(filename, 20, 0.9, 10, 0.5, 0.98, 0.7, 0.25, 0.75, 2, 10,
+        Graph temp_g(filename, 20, 0.9, 10, 0.5, 0.98, 0.7, 0.25, 0.75, 2, 0.04,
                      0.002, 0.027, 0.01, 0.001, 0.01);
         default_requests[r] = generate_requests_fid(temp_g, (int)default_setting["request_cnt"], 0.7, 3);
         assert(!default_requests[r].empty());
@@ -151,7 +151,7 @@ int main() {
                 Graph graph(filename,
                             (int)input_param["time_limit"], 0.9,
                             (int)input_param["avg_memory"], 0.5, 0.98,
-                            input_param["fidelity_threshold"], 0.25, 0.75, 2, 10,
+                            input_param["fidelity_threshold"], 0.25, 0.75, 2, 0.04,
                             input_param["tao"], input_param["Zmin"],
                             input_param["bucket_eps"], input_param["time_eta"],
                             input_param["delta_P"]);
