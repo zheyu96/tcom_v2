@@ -385,19 +385,16 @@ vector<SDpair> generate_requests_purify_needed(Graph &graph, int requests_cnt, i
 }
 
 // Build the default workload from physical feasibility classes, never from an
-// algorithm's output.  "common" requests already meet the threshold on their
-// shortest path and are split into short (1--2 hop) and long (3+ hop) pools.
-// "purification" requests miss the threshold without purification but meet it
-// after at most three pumping rounds per link.
+// algorithm's output.  "common" requests already meet the threshold on a
+// shortest 1--2-hop path.  "purification" requests miss the threshold without
+// purification but meet it after at most three pumping rounds per link.
 // Keeping most requests in the common class prevents the all-zero workload,
 // while the purification class supplies the pressure needed to distinguish
 // purification-aware algorithms.
 vector<SDpair> generate_stratified_requests(
     Graph &graph,
     int requests_cnt,
-    double purification_fraction = 0.40,
-    int max_candidate_hops = 2,
-    double long_common_fraction = 0.0) {
+    double purification_fraction = 0.40) {
     const int node_count = graph.get_num_nodes();
     const double threshold = graph.get_fidelity_threshold();
     const double A = graph.get_A(), B = graph.get_B();
@@ -480,8 +477,7 @@ vector<SDpair> generate_stratified_requests(
             pass_tao(left_fidelity), pass_tao(right_fidelity));
     };
 
-    vector<SDpair> short_common_candidates;
-    vector<SDpair> long_common_candidates;
+    vector<SDpair> common_candidates;
     vector<SDpair> purification_candidates;
     map<int, array<int, 3>> diagnostics;
 
@@ -490,7 +486,7 @@ vector<SDpair> generate_stratified_requests(
             ++destination) {
             Path path = shortest_path(source, destination);
             const int hops = (int)path.size() - 1;
-            if(hops < 1 || hops > max_candidate_hops) continue;
+            if(hops < 1 || hops > 2) continue;
 
             vector<double> link_fidelity(hops);
             for(int link = 0; link < hops; ++link) {
@@ -504,11 +500,8 @@ vector<SDpair> generate_stratified_requests(
             diagnostics[hops][0]++;
 
             if(base_fidelity >= threshold) {
-                vector<SDpair>& common_pool = hops >= 3
-                    ? long_common_candidates
-                    : short_common_candidates;
-                common_pool.push_back({source, destination});
-                common_pool.push_back({destination, source});
+                common_candidates.push_back({source, destination});
+                common_candidates.push_back({destination, source});
                 diagnostics[hops][1]++;
                 continue;
             }
@@ -532,49 +525,28 @@ vector<SDpair> generate_stratified_requests(
 
     if(purification_fraction < 0.0) purification_fraction = 0.0;
     if(purification_fraction > 1.0) purification_fraction = 1.0;
-    if(long_common_fraction < 0.0) long_common_fraction = 0.0;
-    if(long_common_fraction > 1.0 - purification_fraction)
-        long_common_fraction = 1.0 - purification_fraction;
     int purification_target = (int)lround(
         requests_cnt * purification_fraction);
-    int long_common_target = (int)lround(
-        requests_cnt * long_common_fraction);
-    int short_common_target =
-        requests_cnt - purification_target - long_common_target;
+    int common_target = requests_cnt - purification_target;
 
-    if(long_common_candidates.empty() && long_common_target > 0) {
-        cerr << "[request_mix] WARNING: long common-feasible pool is empty"
-             << endl;
-        short_common_target += long_common_target;
-        long_common_target = 0;
-    }
-    if(short_common_candidates.empty() && short_common_target > 0) {
-        cerr << "[request_mix] WARNING: short common-feasible pool is empty"
-             << endl;
-        long_common_target += short_common_target;
-        short_common_target = 0;
+    if(common_candidates.empty()) {
+        cerr << "[request_mix] WARNING: common-feasible pool is empty" << endl;
+        purification_target = requests_cnt;
+        common_target = 0;
     }
     if(purification_candidates.empty()) {
         cerr << "[request_mix] WARNING: purification-feasible pool is empty"
              << endl;
-        if(!short_common_candidates.empty())
-            short_common_target += purification_target;
-        else
-            long_common_target += purification_target;
+        common_target = requests_cnt;
         purification_target = 0;
     }
-    if(short_common_candidates.empty() && long_common_candidates.empty()
-       && purification_candidates.empty()) {
-        cerr << "[request_mix] ERROR: no physically feasible requests up to "
-             << max_candidate_hops << " hops"
+    if(common_candidates.empty() && purification_candidates.empty()) {
+        cerr << "[request_mix] ERROR: no physically feasible 1--2-hop requests"
              << endl;
         return {};
     }
     const double effective_purification_fraction = requests_cnt > 0
         ? (double)purification_target / requests_cnt
-        : 0.0;
-    const double effective_long_common_fraction = requests_cnt > 0
-        ? (double)long_common_target / requests_cnt
         : 0.0;
 
     random_device random_source;
@@ -597,18 +569,11 @@ vector<SDpair> generate_stratified_requests(
         }
     };
 
-    vector<SDpair> short_common_requests;
-    vector<SDpair> long_common_requests;
+    vector<SDpair> common_requests;
     vector<SDpair> purification_requests;
-    short_common_requests.reserve(short_common_target);
-    long_common_requests.reserve(long_common_target);
+    common_requests.reserve(common_target);
     purification_requests.reserve(purification_target);
-    append_repeated(
-        short_common_candidates, short_common_target,
-        short_common_requests);
-    append_repeated(
-        long_common_candidates, long_common_target,
-        long_common_requests);
+    append_repeated(common_candidates, common_target, common_requests);
     append_repeated(
         purification_candidates, purification_target,
         purification_requests);
@@ -618,8 +583,7 @@ vector<SDpair> generate_stratified_requests(
     // composition instead of depending on one global shuffle.
     vector<SDpair> requests;
     requests.reserve(requests_cnt);
-    int short_common_position = 0, long_common_position = 0;
-    int purification_position = 0;
+    int common_position = 0, purification_position = 0;
     while((int)requests.size() < requests_cnt) {
         const int block_size = min(10, requests_cnt - (int)requests.size());
         const int prefix_end = (int)requests.size() + block_size;
@@ -630,24 +594,12 @@ vector<SDpair> generate_stratified_requests(
         block_purification = min(
             block_purification,
             (int)purification_requests.size() - purification_position);
-        const int desired_long_common = (int)lround(
-            prefix_end * effective_long_common_fraction);
-        int block_long_common =
-            desired_long_common - long_common_position;
-        block_long_common = min(
-            block_long_common,
-            (int)long_common_requests.size() - long_common_position);
-        const int block_short_common =
-            block_size - block_purification - block_long_common;
+        const int block_common = block_size - block_purification;
 
         vector<SDpair> block;
         block.reserve(block_size);
-        for(int i = 0; i < block_short_common; ++i)
-            block.push_back(
-                short_common_requests[short_common_position++]);
-        for(int i = 0; i < block_long_common; ++i)
-            block.push_back(
-                long_common_requests[long_common_position++]);
+        for(int i = 0; i < block_common; ++i)
+            block.push_back(common_requests[common_position++]);
         for(int i = 0; i < block_purification; ++i)
             block.push_back(
                 purification_requests[purification_position++]);
@@ -657,8 +609,7 @@ vector<SDpair> generate_stratified_requests(
 
     cerr << "[request_mix] threshold=" << threshold
          << " T=" << T << " tao=" << tao
-         << " | selected short-common=" << short_common_target
-         << " long-common=" << long_common_target
+         << " | selected common=" << common_target
          << " purification=" << purification_target << endl;
     for(const auto& [hops, count] : diagnostics) {
         cerr << "  hop=" << hops
@@ -686,12 +637,8 @@ int main(){
     // 2-hop 不做 purify 需 F>0.892; 3-hop 需 F>0.93
     // min_fidelity=0.80: 大量 link 落在 sweet spot [0.80, 0.892]，purify 優勢顯著
     // max_fidelity=0.95: 少數 link F>0.892 讓非 purify 演算法有少量 2-hop 可過
-    // With T=0.04, the old 0.80--0.95 mapping made every unpurified 3-hop
-    // request physically infeasible.  This wider heterogeneous range retains
-    // low-fidelity links for purification tests and adds a small feasible
-    // high-fidelity 3-hop pool for scheduling comparisons.
-    default_setting["min_fidelity"] = 0.65;
-    default_setting["max_fidelity"] = 0.99;
+    default_setting["min_fidelity"] = 0.80;
+    default_setting["max_fidelity"] = 0.95;
     default_setting["swap_prob"] = 0.9;
     default_setting["fidelity_threshold"] = 0.8;
     default_setting["entangle_time"] = 0.00025;
@@ -703,8 +650,6 @@ int main(){
     // requested distance in the dedicated hop_count experiment.
     default_setting["hop_count"]=2;
     default_setting["purification_request_fraction"]=0.40;
-    default_setting["long_common_request_fraction"]=0.60;
-    default_setting["request_max_hops"]=3;
     default_setting["delta_P"]=0.01;
     map<string, vector<double>> change_parameter;
     change_parameter["request_cnt"] = {80,100,120,140,160};
@@ -758,9 +703,7 @@ int main(){
         const int total_cnt = 200;  // pool must cover max(request_cnt)=160
         default_requests[r] = generate_stratified_requests(
             graph, total_cnt,
-            default_setting["purification_request_fraction"],
-            (int)default_setting["request_max_hops"],
-            default_setting["long_common_request_fraction"]);
+            default_setting["purification_request_fraction"]);
 
         {
             map<int, int> hop_dist;
@@ -777,9 +720,7 @@ int main(){
                 cerr << h << "hop=" << cnt << " ";
             cerr << endl
                  << "  target purification-needed fraction="
-                 << default_setting["purification_request_fraction"]
-                 << " | target feasible 3-hop fraction="
-                 << default_setting["long_common_request_fraction"] << endl
+                 << default_setting["purification_request_fraction"] << endl
                  << "================================================"
                  << "\033[0m" << endl;
         }
