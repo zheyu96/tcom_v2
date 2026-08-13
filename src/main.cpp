@@ -386,11 +386,11 @@ vector<SDpair> generate_requests_purify_needed(Graph &graph, int requests_cnt, i
 
 // Build the default workload from physical feasibility classes, never from an
 // algorithm's output.  "common" requests already meet the threshold on a
-// shortest 1--2-hop path.  "purification" requests miss the threshold without
-// purification but meet it after at most three pumping rounds per link.
-// Keeping most requests in the common class prevents the all-zero workload,
-// while the purification class supplies the pressure needed to distinguish
-// purification-aware algorithms.
+// shortest 1--2-hop path and are split into lower- and higher-fidelity strata.
+// "purification" requests miss the threshold without purification but meet it
+// after at most three pumping rounds per link.  Keeping most requests in the
+// common class prevents the all-zero workload, while its fidelity strata give
+// fidelity-aware algorithms a heterogeneous (but still shared) workload.
 vector<SDpair> generate_stratified_requests(
     Graph &graph,
     int requests_cnt,
@@ -477,7 +477,7 @@ vector<SDpair> generate_stratified_requests(
             pass_tao(left_fidelity), pass_tao(right_fidelity));
     };
 
-    vector<SDpair> common_candidates;
+    vector<pair<double, SDpair>> common_candidates_by_fidelity;
     vector<SDpair> purification_candidates;
     map<int, array<int, 3>> diagnostics;
 
@@ -500,8 +500,10 @@ vector<SDpair> generate_stratified_requests(
             diagnostics[hops][0]++;
 
             if(base_fidelity >= threshold) {
-                common_candidates.push_back({source, destination});
-                common_candidates.push_back({destination, source});
+                common_candidates_by_fidelity.push_back(
+                    {base_fidelity, {source, destination}});
+                common_candidates_by_fidelity.push_back(
+                    {base_fidelity, {destination, source}});
                 diagnostics[hops][1]++;
                 continue;
             }
@@ -523,13 +525,36 @@ vector<SDpair> generate_stratified_requests(
         }
     }
 
+    // Use a topology-dependent median instead of a hand-tuned fidelity
+    // boundary.  This keeps both common strata populated when threshold or
+    // link-fidelity settings change.
+    sort(
+        common_candidates_by_fidelity.begin(),
+        common_candidates_by_fidelity.end(),
+        [](const pair<double, SDpair>& left,
+           const pair<double, SDpair>& right) {
+            return left.first < right.first;
+        });
+    vector<SDpair> marginal_common_candidates;
+    vector<SDpair> high_common_candidates;
+    const int common_split =
+        (int)common_candidates_by_fidelity.size() / 2;
+    for(int i = 0; i < (int)common_candidates_by_fidelity.size(); ++i) {
+        if(i < common_split)
+            marginal_common_candidates.push_back(
+                common_candidates_by_fidelity[i].second);
+        else
+            high_common_candidates.push_back(
+                common_candidates_by_fidelity[i].second);
+    }
+
     if(purification_fraction < 0.0) purification_fraction = 0.0;
     if(purification_fraction > 1.0) purification_fraction = 1.0;
     int purification_target = (int)lround(
         requests_cnt * purification_fraction);
     int common_target = requests_cnt - purification_target;
 
-    if(common_candidates.empty()) {
+    if(common_candidates_by_fidelity.empty()) {
         cerr << "[request_mix] WARNING: common-feasible pool is empty" << endl;
         purification_target = requests_cnt;
         common_target = 0;
@@ -540,13 +565,27 @@ vector<SDpair> generate_stratified_requests(
         common_target = requests_cnt;
         purification_target = 0;
     }
-    if(common_candidates.empty() && purification_candidates.empty()) {
+    if(common_candidates_by_fidelity.empty()
+       && purification_candidates.empty()) {
         cerr << "[request_mix] ERROR: no physically feasible 1--2-hop requests"
              << endl;
         return {};
     }
+    int high_common_target = common_target / 2;
+    int marginal_common_target = common_target - high_common_target;
+    if(marginal_common_candidates.empty()) {
+        high_common_target = common_target;
+        marginal_common_target = 0;
+    }
+    if(high_common_candidates.empty()) {
+        marginal_common_target = common_target;
+        high_common_target = 0;
+    }
     const double effective_purification_fraction = requests_cnt > 0
         ? (double)purification_target / requests_cnt
+        : 0.0;
+    const double effective_high_common_fraction = requests_cnt > 0
+        ? (double)high_common_target / requests_cnt
         : 0.0;
 
     random_device random_source;
@@ -569,11 +608,20 @@ vector<SDpair> generate_stratified_requests(
         }
     };
 
-    vector<SDpair> common_requests;
+    vector<SDpair> marginal_common_requests;
+    vector<SDpair> high_common_requests;
     vector<SDpair> purification_requests;
-    common_requests.reserve(common_target);
+    marginal_common_requests.reserve(marginal_common_target);
+    high_common_requests.reserve(high_common_target);
     purification_requests.reserve(purification_target);
-    append_repeated(common_candidates, common_target, common_requests);
+    append_repeated(
+        marginal_common_candidates,
+        marginal_common_target,
+        marginal_common_requests);
+    append_repeated(
+        high_common_candidates,
+        high_common_target,
+        high_common_requests);
     append_repeated(
         purification_candidates, purification_target,
         purification_requests);
@@ -583,7 +631,9 @@ vector<SDpair> generate_stratified_requests(
     // composition instead of depending on one global shuffle.
     vector<SDpair> requests;
     requests.reserve(requests_cnt);
-    int common_position = 0, purification_position = 0;
+    int marginal_common_position = 0;
+    int high_common_position = 0;
+    int purification_position = 0;
     while((int)requests.size() < requests_cnt) {
         const int block_size = min(10, requests_cnt - (int)requests.size());
         const int prefix_end = (int)requests.size() + block_size;
@@ -594,12 +644,23 @@ vector<SDpair> generate_stratified_requests(
         block_purification = min(
             block_purification,
             (int)purification_requests.size() - purification_position);
-        const int block_common = block_size - block_purification;
+        const int desired_high_common = (int)lround(
+            prefix_end * effective_high_common_fraction);
+        int block_high_common =
+            desired_high_common - high_common_position;
+        block_high_common = min(
+            block_high_common,
+            (int)high_common_requests.size() - high_common_position);
+        const int block_marginal_common =
+            block_size - block_purification - block_high_common;
 
         vector<SDpair> block;
         block.reserve(block_size);
-        for(int i = 0; i < block_common; ++i)
-            block.push_back(common_requests[common_position++]);
+        for(int i = 0; i < block_marginal_common; ++i)
+            block.push_back(
+                marginal_common_requests[marginal_common_position++]);
+        for(int i = 0; i < block_high_common; ++i)
+            block.push_back(high_common_requests[high_common_position++]);
         for(int i = 0; i < block_purification; ++i)
             block.push_back(
                 purification_requests[purification_position++]);
@@ -610,7 +671,20 @@ vector<SDpair> generate_stratified_requests(
     cerr << "[request_mix] threshold=" << threshold
          << " T=" << T << " tao=" << tao
          << " | selected common=" << common_target
+         << " (marginal=" << marginal_common_target
+         << ", high=" << high_common_target << ")"
          << " purification=" << purification_target << endl;
+    if(!common_candidates_by_fidelity.empty()) {
+        const double minimum_common_fidelity =
+            common_candidates_by_fidelity.front().first;
+        const double median_common_fidelity =
+            common_candidates_by_fidelity[common_split].first;
+        const double maximum_common_fidelity =
+            common_candidates_by_fidelity.back().first;
+        cerr << "  common fidelity range=" << minimum_common_fidelity
+             << " ... " << median_common_fidelity
+             << " ... " << maximum_common_fidelity << endl;
+    }
     for(const auto& [hops, count] : diagnostics) {
         cerr << "  hop=" << hops
              << " candidates=" << count[0]

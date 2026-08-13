@@ -151,7 +151,7 @@ class ChartGenerator:
 
     _Y_INTERVALS = {
         'fidelity_gain':{
-            'request_cnt': (40, 130, 5, 2), 'tao': (30, 60, 5, 2),
+            'request_cnt': (30, 123, 10, 3), 'tao': (30, 60, 5, 2),
             'time_limit': (30, 55, 5, 1), 'avg_memory': (0, 30, 5, 2),
             'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (10, 30, 5, 2),
             'swap_prob': (30, 70, 5, 2), 'entangle_time': "auto",
