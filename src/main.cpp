@@ -394,7 +394,7 @@ vector<SDpair> generate_requests_purify_needed(Graph &graph, int requests_cnt, i
 vector<SDpair> generate_stratified_requests(
     Graph &graph,
     int requests_cnt,
-    double purification_fraction = 0.30) {
+    double purification_fraction = 0.40) {
     const int node_count = graph.get_num_nodes();
     const double threshold = graph.get_fidelity_threshold();
     const double A = graph.get_A(), B = graph.get_B();
@@ -579,7 +579,7 @@ vector<SDpair> generate_stratified_requests(
         purification_requests);
 
     // The request-count experiment consumes prefixes of this pool.  Mix in
-    // ten-request blocks so every 80/100/... prefix retains the same 70/30
+    // ten-request blocks so every 80/100/... prefix stays close to the target
     // composition instead of depending on one global shuffle.
     vector<SDpair> requests;
     requests.reserve(requests_cnt);
@@ -649,7 +649,7 @@ int main(){
     // The default workload itself is stratified below.  hop_count is only the
     // requested distance in the dedicated hop_count experiment.
     default_setting["hop_count"]=2;
-    default_setting["purification_request_fraction"]=0.30;
+    default_setting["purification_request_fraction"]=0.40;
     default_setting["delta_P"]=0.01;
     map<string, vector<double>> change_parameter;
     change_parameter["request_cnt"] = {80,100,120,140,160};
@@ -719,7 +719,8 @@ int main(){
             for (auto &[h, cnt] : hop_dist)
                 cerr << h << "hop=" << cnt << " ";
             cerr << endl
-                 << "  target mix: common=70%, purification-needed=30%" << endl
+                 << "  target purification-needed fraction="
+                 << default_setting["purification_request_fraction"] << endl
                  << "================================================"
                  << "\033[0m" << endl;
         }

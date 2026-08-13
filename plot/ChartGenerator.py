@@ -1,348 +1,462 @@
-import numpy as np
-import math
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
-#import latex
-import matplotlib.pyplot as plt
-import matplotlib.transforms
+import math
+import sys
+import numpy as np
+
 import matplotlib
-from matplotlib.offsetbox import AnchoredOffsetbox, TextArea, HPacker, VPacker
+matplotlib.use("Agg")  # 無頭後端（WSL/遠端/CI）安全
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator, FuncFormatter
+from matplotlib import font_manager as fm
+
+
+# =========================
+# 強制使用 Times New Roman
+# =========================
+def _require_times_new_roman():
+    """
+    嚴格要求使用 Times New Roman。
+    """
+    candidates = []
+    env_paths = os.environ.get("TNR_PATHS", "")
+    if env_paths:
+        for p in env_paths.split(","):
+            p = p.strip()
+            if p:
+                candidates.append(p)
+
+    candidates += [
+        r"C:\Windows\Fonts\times.ttf",
+        r"C:\Windows\Fonts\timesi.ttf",
+        r"C:\Windows\Fonts\timesbd.ttf",
+        r"C:\Windows\Fonts\timesbi.ttf",
+        r"C:\Windows\Fonts\Times New Roman.ttf",
+        r"C:\Windows\Fonts\Times New Roman Italic.ttf",
+        r"C:\Windows\Fonts\Times New Roman Bold.ttf",
+        r"C:\Windows\Fonts\Times New Roman Bold Italic.ttf",
+    ]
+
+    candidates += [
+        "/System/Library/Fonts/Times.ttc",
+        "/Library/Fonts/Times New Roman.ttf",
+        "/Library/Fonts/Times New Roman Italic.ttf",
+        "/Library/Fonts/Times New Roman Bold.ttf",
+        "/Library/Fonts/Times New Roman Bold Italic.ttf",
+    ]
+
+    candidates += [
+        "/usr/share/fonts/truetype/msttcorefonts/times.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman/Times_New_Roman.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf",
+    ]
+
+    for path in candidates:
+        try:
+            if os.path.isdir(path):
+                for fpath in fm.findSystemFonts(fontpaths=[path]):
+                    fm.fontManager.addfont(fpath)
+            elif os.path.isfile(path):
+                fm.fontManager.addfont(path)
+        except Exception:
+            pass
+
+    matplotlib.rcParams.update({
+        "font.family": "Times New Roman",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 3,
+        "axes.unicode_minus": False,
+        "mathtext.fontset": "cm",
+        "text.usetex": False,
+        "xtick.labelsize": 25,
+        "ytick.labelsize": 25,
+        "axes.labelsize": 25,
+        "axes.titlesize": 25,
+    })
+
+    try:
+        _ = fm.findfont("Times New Roman", fontext="ttf", fallback_to_default=False)
+    except TypeError:
+        has_tnr = False
+        for fpath in fm.findSystemFonts():
+            try:
+                f = fm.get_font(fpath)
+                name = f.family_name
+                if name and "Times New Roman" in name:
+                    has_tnr = True
+                    break
+            except Exception:
+                pass
+        if not has_tnr:
+            _fail_tnr()
+        else:
+            return
+    except Exception:
+        _fail_tnr()
+
+def _fail_tnr():
+    msg = (
+        "\n[ERROR] Times New Roman 未安裝或未被 Matplotlib 偵測到。\n"
+        "請安裝字型後再執行。\n"
+    )
+    print(msg, file=sys.stderr)
+    raise SystemExit(2)
+
 
 class ChartGenerator:
-    # data檔名 Y軸名稱 X軸名稱 Y軸要除多少(10的多少次方) Y軸起始座標 Y軸終止座標 Y軸座標間的間隔
-    def __init__(self, dataName, _Xlabel, _Ylabel, Xlabel, Ylabel, Xpow, Ypow, Ystart, Yend, Yinterval):
-        filename = '../data/ans/' + dataName
+    """
+    用法: ChartGenerator(dataName, Xkey, Ykey, label_every=None)
+    """
 
-        if not os.path.exists(filename):
-            print("file doesn't exist")
+    _FONT_SIZE_BASE = 30
+
+    _RIGHT_TOP  = (0.6, 0.85)
+    _LEFT_TOP   = (0.35, 0.85)
+    _RIGHT_DOWN = (0.60, 0.13)
+    _LEFT_DOWN  = (0.40, 0.13)
+
+    _BBOX_POS = {
+        'fidelity_gain':{
+            'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
+            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
+            'hop_count': _RIGHT_TOP,
+            'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP
+        },
+        'succ_request_cnt':{
+            'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
+            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
+            'hop_count': _RIGHT_TOP,
+            'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP
+        },
+        'pure_fidelity':{
+            'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
+            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
+            'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP,
+            'hop_count': "auto",
+        },
+        'actual_req_cnt':{
+            'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
+            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
+            'hop_count': _RIGHT_TOP,
+            'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP
+        },
+    }
+
+    _Y_INTERVALS = {
+        'fidelity_gain':{
+            'request_cnt': (40, 130, 5, 2), 'tao': (30, 60, 5, 2),
+            'time_limit': (30, 55, 5, 1), 'avg_memory': (0, 30, 5, 2),
+            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (10, 30, 5, 2),
+            'swap_prob': (30, 70, 5, 2), 'entangle_time': "auto",
+            'hop_count':(10,90,5,3),
+            'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
+        },
+        'succ_request_cnt':{
+            'request_cnt': (40, 160, 5, 8), 'tao': (40, 55, 5, 1),
+            'time_limit': (45, 60, 5, 1), 'avg_memory': (0, 45, 5, 3),
+            'min_fidelity': (65, 95, 5, 1), 'fidelity_threshold': (15, 40, 5, 1),
+            'swap_prob': (25, 70, 5, 1), 'hop_count':(20,105,5,7),
+            'entangle_time': "auto",
+            'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
+        },
+        'pure_fidelity':{
+            'request_cnt': (50, 80, 5, 2), 'tao': (50, 70, 1, 5),
+            'time_limit': (45, 70, 1, 5), 'avg_memory': (20, 40, 1, 5),
+            'min_fidelity': (50, 80, 1, 5), 'fidelity_threshold': (50, 70, 1, 5),
+            'swap_prob': "auto", 'entangle_time': "auto", 'entangle_prob': "auto",
+            'hop_count': "auto",
+            'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
+        },
+        'actual_req_cnt':{
+            'request_cnt': (0,100,5,4), 'tao': (45,65,5,1),
+            'time_limit': (50,75,5,1), 'avg_memory': (10,80,5,2),
+            'min_fidelity': "auto", 'fidelity_threshold': (25,85,5,1),
+            'swap_prob': (50,75,5,1), 'hop_count': "auto",
+            'entangle_time': "auto",
+            'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
+        },
+    }
+
+    _AXIS_NAME = {
+        "request_cnt": r"$\#$Requests", "time_limit": "$| T |$",
+        "avg_memory": "Average Memory Limit", "tao": r"$\it{\delta}$",
+        "swap_prob": "Swapping Probability", "fidelity_gain": "Exp. Werner Param. Sum",
+        "succ_request_cnt": r"$\#$Exp. Accepted Requests", "pure_fidelity": "Average Final Fidelity",
+        "actual_req_cnt": r"$\#$Accpected Requests",
+        "fidelity_threshold": "Fidelity Threshold", "min_fidelity": "Minimum Initial Fidelity",
+        "entangle_time": "Entangling Time", "entangle_prob": "Entangling Probability",
+        "Zmin": r"$Z_{min}$", "time_eta": r"$\eta$", "bucket_eps": r"bucket $\epsilon$",
+        "hop_count": "Hop Threshold",
+    }
+
+    _ONLY_WERNER_X = {"Zmin", "time_eta", "bucket_eps"}
+
+    # 欄位順序與 src/main.cpp 寫入 .ans 的順序完全相同：
+    # ZFA_UB, ZFA, ZFA2, MyAlgo1 (FNPR), MyAlgo3 (FLTO), EFiRAP.
+    _ALGO_NAMES = ["UB", "ZFA", "ZFA2", "FNPR", "FLTO", "EFiRAP"]
+
+    _DRAW_ORDER = [0, 1, 2, 3, 4, 5]
+
+    # 保持原本各欄位使用的 marker 與顏色。
+    _MARKERS = ['s', '*', 's', 'v', 'o', '^', 'x', '1', 'D']
+    _COLORS = ["#800080", "#FF0000", "#0000FF", "#01C501", "#800080", "#FF00FF", "#00FFFF", "#808080", "#555555"]
+
+    _SKIP_ALGOS = ["Nesting", "Linear", "ASAP"]
+
+    def __init__(self, dataName: str, x_key: str, y_key: str, label_every: int|None = None):
+        path = os.path.join('..', 'data', 'ans', dataName)
+        if not os.path.exists(path):
+            print(f"[WARN] file doesn't exist: {os.path.abspath(path)}")
             return
-        
-        with open(filename, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            
-        print("start generate", filename)
-        
-        fontsize = 22
-        Xlabel_fontsize = fontsize
-        Ylabel_fontsize = fontsize
-        Xticks_fontsize = fontsize
-        Yticks_fontsize = fontsize
-            
-        andy_theme = {
-        # "axes.grid": True,
-        # "grid.linestyle": "--",
-        # "legend.framealpha": 1,
-        # "legend.facecolor": "white",
-        # "legend.shadow": True,
-        # "legend.fontsize": 14,
-        # "legend.title_fontsize": 16,
-        "xtick.labelsize": 20,
-        "ytick.labelsize": 20,
-        "axes.labelsize": 20,
-        "axes.titlesize": 20,
-        "mathtext.fontset": "custom",
-        "font.family": "Times New Roman",
-        "mathtext.default": "default",
-        "mathtext.it": "Times New Roman:italic",
-        "mathtext.cal": "Times New Roman:italic",
-        # "mathtext.fontset": "regular",
-        # "figure.autolayout": True,
-        "text.usetex": True,
-        # "figure.dpi": 800
-        }
-        
-        matplotlib.rcParams.update(andy_theme)        
-        fig, ax1 = plt.subplots(figsize=(6, 5), dpi=600)
-   
-        # axis x, y ticks settings
-        ax1.tick_params(direction="in")
-        ax1.tick_params(bottom=True, top=True, left=True, right=True)
-        ax1.tick_params(pad=10)
 
-        RIGHT_TOP = (0.7, 0.87)
-        LEFT_TOP = (0.3, 0.87)
-        bbox_pos_settings = {
-            'fidelity_gain':{
-                'request_cnt': LEFT_TOP,
-                'tao': RIGHT_TOP,
-                'time_limit': LEFT_TOP,
-                'avg_memory': LEFT_TOP,
-                'min_fidelity': LEFT_TOP,
-                'fidelity_threshold': RIGHT_TOP,
-                'swap_prob': LEFT_TOP,
-                'entangle_time': RIGHT_TOP,
-                'entangle_prob': LEFT_TOP
-            },
-            'succ_request_cnt':{
-                'request_cnt': LEFT_TOP,
-                'tao': RIGHT_TOP,
-                'time_limit': LEFT_TOP,
-                'avg_memory': LEFT_TOP,
-                'min_fidelity': LEFT_TOP,
-                'fidelity_threshold': RIGHT_TOP,
-                'swap_prob': LEFT_TOP,
-                'entangle_time': RIGHT_TOP,
-                'entangle_prob': LEFT_TOP
-            },
-        }
+        with open(path, 'r', encoding='utf-8') as f:
+            raw_lines = f.readlines()
+        print("start generate", path)
 
-        Y_interval_settings = {
-            'fidelity_gain':{
-                'request_cnt': (5, 30, 5),
-                'tao': (5, 25, 5),
-                'time_limit': (5, 25, 5),
-                'avg_memory': (5, 20, 5),
-                'min_fidelity': (5, 25, 5),
-                'fidelity_threshold': (0, 25, 5),
-                'swap_prob': (0, 20, 5),
-                'entangle_time': (0, 25, 5),
-                'entangle_prob': (0, 2e-4, 5e-5)
-            },
-            'succ_request_cnt':{
-                'request_cnt': (5, 40, 5),
-                'tao': (5, 30, 5),
-                'time_limit': (5, 30, 5),
-                'avg_memory': (5, 30, 5),
-                'min_fidelity': (5, 30, 5),
-                'fidelity_threshold': (0, 30, 5),
-                'swap_prob': (0, 25, 5),
-                'entangle_time': (0, 25, 5),
-                'entangle_prob': (0, 2e-4, 5e-5)
-            }
-        }
+        x_vals, y_vals = [], []
+        num_rows, num_cols = 0, None
+        for line in raw_lines:
+            line = line.strip()
+            if not line:
+                continue
+            parts = [p for p in line.split() if p != ""]
+            if len(parts) < 2:
+                continue
+            if num_cols is None:
+                num_cols = len(parts)
+            if len(parts) != num_cols:
+                continue
 
-        if _Xlabel == "tao" or _Xlabel == "entangle_time" or _Xlabel == "entangle_prob":
-            Xpow = -3
+            num_rows += 1
+            x_vals.append(parts[0])
+            good = True
+            for i in range(1, len(parts)):
+                try:
+                    y_vals.append(float(parts[i]))
+                except ValueError:
+                    good = False
+                    break
+            if not good:
+                num_rows -= 1
+                x_vals.pop()
+                y_vals = y_vals[:(len(y_vals) - (len(parts)-1))]
 
-        """
-        Read Data to y
+        if num_rows == 0 or num_cols is None or num_cols < 2:
+            print("[WARN] no valid data rows.")
+            return
 
-        """
-        x = []
-        y = []
-        num_of_data = 0
-        for line in lines:
-            line = line.replace('\n','')
-            if line[-1] == ' ':
-                line = line[0:-1]
-            data = line.split(' ')
-            num_of_line = len(data)
-            num_of_data += 1
+        num_algos = num_cols - 1
+        y = np.array(y_vals).reshape(num_rows, num_algos).T.tolist()
 
-            for i in range(num_of_line):
-                if i == 0:
-                    x.append(data[i])
-                else:
-                    if Ylabel.endswith("(%)"):
-                        y.append(str(float(data[i]) * 100))        
-                    else:
-                        y.append(data[i])
-        num_of_algo = num_of_line - 1
-        y = np.array(y).reshape(-1, num_of_algo).T.tolist() # transform 1-D list to 2-D list
-        # print(x)
-        # print(y)
+        # X 軸處理
+        Xpow = -3 if x_key in ("tao", "entangle_time", "entangle_prob") else 0
+        if Xpow != 0:
+            tmp = []
+            for xv in x_vals:
+                try:
+                    tmp.append(float(xv) / (10 ** Xpow))
+                except ValueError:
+                    tmp.append(xv)
+            x_labels = [f"{v:g}" if isinstance(v, float) else str(v) for v in tmp]
+        else:
+            x_labels = [str(v) for v in x_vals]
 
-        max_data = 0
-        min_data = math.inf
-        Ypow = -5
-        Ydiv = float(10 ** Ypow)
-        Xdiv = float(10 ** Xpow)
-        
-        for i in range(num_of_data):
-            if Xpow != 0:
-                x[i] = float(x[i]) / Xdiv
-                if math.fabs(x[i] - int(x[i])) <= 1e-6:
-                    x[i] = int(round(x[i] * 10) / 10)
+        # Y 軸處理
+        raw_max = max(max(row) for row in y)
+        Ypow = self._pick_engineering_exp(abs(raw_max))
+        Ydiv = float(10 ** Ypow) if Ypow != 0 else 1.0
 
-        for i in range(num_of_algo):
-            for j in range(num_of_data):
-                y[i][j] = float(y[i][j]) / Ydiv
+        max_data, min_data = -math.inf, math.inf
+        for i in range(num_algos):
+            for j in range(num_rows):
+                y[i][j] = y[i][j] / Ydiv
                 max_data = max(max_data, y[i][j])
                 min_data = min(min_data, y[i][j])
 
-        """
-        Start plotting
+        # 畫圖
+        fig, ax1 = plt.subplots(figsize=(6.8, 5.4), dpi=600, constrained_layout=True)
+        ax1.tick_params(direction="in", bottom=True, top=True, left=True, right=True, pad=10)
 
-        """
-        per_algo_name = ["G-FNPR", "G-UB", "G-FLTO", "G-Nesting", "G-Linear", "G-ASAP"]
-        algo_name = []
-        per = [0, 2, 1, 3, 4, 5]
-        marker = ['s', 'v', 'o', '^', 'x', '1']
-        color = [
-            "#FF0000",  # red
-            "#00FF00",  # lime
-            "#0000FF",  # blue
-            "#000000",  # black
-            "#900321",  # brown
-            "#FF00FF",  # green
-        ]
+        plotted = []
+        for draw_idx in range(min(10, num_algos)):
+            if draw_idx >= len(self._DRAW_ORDER):
+                break
+            i = self._DRAW_ORDER[draw_idx]
+            if i >= num_algos:
+                continue
 
-        for idx in range(num_of_algo):
-            i = per[idx]
-            if _Ylabel == "succ_request_cnt":   # skip upper bound
-                if per_algo_name[i][-2:] == "UB":
-                    continue
+            # [修改] 若在跳過列表中，無論何種 X 軸都不畫
+            if self._ALGO_NAMES[i] in self._SKIP_ALGOS:
+                continue
+
+            if x_key in self._ONLY_WERNER_X and self._ALGO_NAMES[i] != "G-Werner":
+                continue
+            
+            # 針對 succ_request_cnt / actual_req_cnt，隱藏所有結尾是 UB 的項目
+            if y_key in ("succ_request_cnt", "actual_req_cnt") and self._ALGO_NAMES[i].endswith("UB"):
+                continue
+
             ax1.plot(
-                range(len(x)), 
-                y[i],
-                color = color[i], 
-                lw = 1, 
-                ls = "-", 
-                marker = marker[i], 
-                markersize = 8, 
-                markerfacecolor = 'None', 
-                markeredgewidth = 2, 
-                zorder = -idx
+                range(len(x_labels)), y[i],
+                color=self._COLORS[i], lw=1, ls="-",
+                marker=self._MARKERS[i], markersize=16,
+                markerfacecolor='None', markeredgewidth=2.5, zorder=-draw_idx
             )
-  
-        for idx in range(num_of_algo):
-            i = per[idx]
-            if _Ylabel == "succ_request_cnt":   # skip upper bound
-                if per_algo_name[i][-2:] == "UB":
-                    continue
-            algo_name.append(per_algo_name[i])    # adjust the order
-        
+            plotted.append(i)
 
-        bbox_pos = bbox_pos_settings[_Ylabel][_Xlabel]  # set bbox pos
-        (Ystart, Yend, Yinterval) = Y_interval_settings[_Ylabel][_Xlabel] # set Y interval
-        Ystart /= Ydiv
-        Yend /= Ydiv
-        Yinterval /= Ydiv
-        leg = plt.legend(
-            algo_name,
-            loc = 'center',
-            # bbox_to_anchor = (0.7, 0.87),
-            bbox_to_anchor = bbox_pos,
-            prop = {"size": fontsize-6, "family": "Times New Roman"},
-            frameon = False,
-            handletextpad = 0.2,
-            handlelength = 1,
-            labelspacing = 0.2,
-            columnspacing = 0.6,
-            ncol = 2,
-            facecolor = 'None',
+        legend_names = []
+        for draw_idx in range(min(10, num_algos)):
+            if draw_idx >= len(self._DRAW_ORDER): break
+            i = self._DRAW_ORDER[draw_idx]
+            if i >= num_algos: continue
+
+            # [修改] Legend 也要過濾掉
+            if self._ALGO_NAMES[i] in self._SKIP_ALGOS:
+                continue
+
+            if x_key in self._ONLY_WERNER_X and self._ALGO_NAMES[i] != "G-Werner":
+                continue
+            
+            if y_key in ("succ_request_cnt", "actual_req_cnt") and self._ALGO_NAMES[i].endswith("UB"):
+                continue
+
+            legend_names.append(self._ALGO_NAMES[i])
+
+        fontsize = self._FONT_SIZE_BASE
+        bbox_pos = self._BBOX_POS[y_key].get(x_key, (0.5, 0.5)) 
+        
+        plt.legend(
+            legend_names, loc='center', bbox_to_anchor=bbox_pos,
+            prop={"size": fontsize-10, "family": "Times New Roman"},
+            frameon=False, handletextpad=0.5, handlelength=1,
+            labelspacing=0.2, columnspacing=0.6, ncol=2, facecolor='None',
         )
-        
-        unit = ""
-        if _Xlabel == "tao" or _Xlabel == "entangle_time":
-            unit = " s"
 
-        Xlabel += self.genMultiName(Xpow, unit)
-        Ylabel += self.genMultiName(Ypow, unit)
-        plt.subplots_adjust(top = 0.97)
-        plt.subplots_adjust(left = 0.2)
-        plt.subplots_adjust(right = 0.975)
-        plt.subplots_adjust(bottom = 0.18)
-        
-        plt.yticks(np.arange(Ystart, Yend+Yinterval, step=Yinterval), fontsize=Yticks_fontsize)
-        plt.xticks(ticks=range(len(x)), labels=x, fontsize=Xticks_fontsize)
-        plt.ylabel(Ylabel, fontsize=Ylabel_fontsize)
-        plt.xlabel(Xlabel, fontsize=Xlabel_fontsize, labelpad=500)
-        ax1.yaxis.set_label_coords(-0.13, 0.5)
-        ax1.xaxis.set_label_coords(0.45, -0.13)
-        # plt.show()
-    
-        pdfName = dataName[0:-4].replace('#', '')
-        plt.savefig('../data/pdf/Fie4_{}.eps'.format(pdfName)) 
-        plt.savefig('../data/pdf/{}.jpg'.format(pdfName)) 
-        # Xlabel = Xlabel.replace(' (%)','')
-        # Xlabel = Xlabel.replace('# ','')
-        # Ylabel = Ylabel.replace('# ','')
+        # 自動 Y 軸刻度
+        cfg = self._Y_INTERVALS[y_key].get(x_key, "auto")
+        manual_y_range = cfg != "auto"
+        if cfg == "auto":
+            Ystart, Yend, Yinterval = self._auto_y_range(min_data, max_data, target_ticks=7, padding=0.05)
+            span = max(1e-12, Yend - Ystart)
+            rough_labels = span / max(1e-12, Yinterval)
+            label_step_factor = max(1, int(math.ceil(rough_labels / 7)))
+        else:
+            if len(cfg) == 3:
+                _Ys, _Ye, _Yi = cfg; _label = 1
+            else:
+                _Ys, _Ye, _Yi, _label = cfg
+            Ystart, Yend, Yinterval = _Ys / Ydiv, _Ye / Ydiv, _Yi / Ydiv
+            label_step_factor = int(max(1, _label))
+
+        if label_every is not None:
+            label_step_factor = int(max(1, label_every))
+
+        if plotted and not manual_y_range:
+            ymax_plotted = max(max(y[i]) for i in plotted)
+            top_needed = (math.ceil(ymax_plotted / Yinterval) + 1) * Yinterval
+            if top_needed > Yend:
+                Yend = top_needed
+
+        Xpow_disp_unit = " s" if x_key in ("tao", "entangle_time") else ""
+        Xlabel_text = self._AXIS_NAME.get(x_key, x_key) + self._gen_power_suffix(Xpow, Xpow_disp_unit)
+        Ylabel_text = self._AXIS_NAME.get(y_key, y_key) + self._gen_power_suffix(Ypow, "")
+
+        major_step = Yinterval * label_step_factor
+        minor_step = Yinterval
+        span = max(1e-12, Yend - Ystart)
+        approx_labels = span / max(1e-12, major_step)
+        if approx_labels > 1000:
+            factor = max(1, math.ceil(approx_labels / 12))
+            major_step *= factor
+
+        ax1.set_ylim(Ystart, Yend)
+        ax1.yaxis.set_major_locator(MultipleLocator(major_step))
+        ax1.yaxis.set_minor_locator(MultipleLocator(minor_step))
+        ax1.tick_params(axis='y', which='major', labelsize=self._FONT_SIZE_BASE)
+        ax1.tick_params(axis='y', which='minor', length=4, labelsize=0)
+
+        def _fmt_y(val, pos):
+            if abs(val) >= 100 or abs(val) == int(val): return f"{val:.0f}"
+            elif abs(val) >= 10: return f"{val:.1f}"
+            else: return f"{val:.2f}"
+        ax1.yaxis.set_major_formatter(FuncFormatter(_fmt_y))
+
+        plt.xticks(ticks=range(len(x_labels)), labels=x_labels, fontsize=self._FONT_SIZE_BASE+4)
+        plt.ylabel(Ylabel_text, fontsize=self._FONT_SIZE_BASE+4)
+        plt.xlabel(Xlabel_text, fontsize=self._FONT_SIZE_BASE+4, labelpad=100)
+        ax1.yaxis.set_label_coords(-0.16, 0.45)
+        ax1.xaxis.set_label_coords(0.45, -0.2)
+
+        out_stem = os.path.splitext(os.path.basename(path))[0].replace('#', '')
+        pdf_dir = os.path.join('..', 'data', 'pdf')
+        os.makedirs(pdf_dir, exist_ok=True)
+        plt.savefig(os.path.join(pdf_dir, f'NWFA_{out_stem}.eps'), bbox_inches="tight", pad_inches=0.3)
+        plt.savefig(os.path.join(pdf_dir, f'{out_stem}.png'),      bbox_inches="tight", pad_inches=0.3)
         plt.close()
 
-    def genMultiName(self, multiple, unit):
-        if multiple == 0:
-            return str()
-        else:
-            return " ($" + "10" + "^{" + str(multiple) + "}" + "$" + unit + ")"
+    @staticmethod
+    def _gen_power_suffix(pow10: int, unit: str) -> str:
+        if pow10 == 0: return ""
+        return f" ($10^{{{pow10}}}$" + (f"{unit}" if unit else "") + ")"
+
+    @staticmethod
+    def _nice_step(span: float) -> float:
+        if span <= 0: return 1.0
+        exp = math.floor(math.log10(span))
+        base = span / (10**exp)
+        if base <= 1.5: m = 1
+        elif base <= 3: m = 2
+        elif base <= 7: m = 5
+        else: m = 10
+        return m * (10**exp)
+
+    @classmethod
+    def _auto_y_range(cls, ymin: float, ymax: float, target_ticks=6, padding=0.05):
+        if ymin == math.inf or ymax == -math.inf: return (0.0, 1.0, 0.2)
+        if ymin == ymax:
+            if ymin == 0: return (0.0, 1.0, 0.2)
+            pad = abs(ymin) * max(padding, 0.02)
+            ymin, ymax = ymin - pad, ymax + pad
+        span = ymax - ymin
+        rough = span / max(2, target_ticks - 1)
+        step = cls._nice_step(rough)
+        start = math.floor(ymin / step) * step
+        end   = math.ceil (ymax / step) * step
+        return (start, end, step)
+
+    @staticmethod
+    def _pick_engineering_exp(max_abs_val: float) -> int:
+        if max_abs_val <= 0: return 0
+        if 1 <= max_abs_val < 1000: return 0
+        exp10 = math.floor(math.log10(max_abs_val))
+        eng = int(math.floor(exp10 / 3) * 3)
+        scaled = max_abs_val / (10 ** eng)
+        if scaled < 1 and eng - 3 >= -18: eng -= 3
+        elif scaled >= 1000 and eng + 3 <= 18: eng += 3
+        return eng
+
 
 if __name__ == "__main__":
-    # data檔名 Y軸名稱 X軸名稱 Y軸要除多少(10的多少次方) Y軸起始座標 Y軸終止座標 Y軸座標間的間隔
-    # ChartGenerator("numOfnodes_waitingTime.txt", "need #round", "#Request of a round", 0, 0, 25, 5)
-    Xlabels = ["entangle_prob"]
-    Ylabels = ["fidelity_gain", "succ_request_cnt"]
+    _require_times_new_roman()
+
+    Xlabels = [
+        "request_cnt", "time_limit", "tao",
+        "avg_memory", "fidelity_threshold", "hop_count", "swap_prob",
+    ]
+    Ylabels = ["fidelity_gain", "succ_request_cnt", "actual_req_cnt"]
     PathNames = ["Greedy"]
 
-    LabelsName = {}
-    # LabelsName["num_nodes"] = "#Nodes"
-    LabelsName["request_cnt"] = "$\#$Requests"
-    LabelsName["time_limit"] = "$|T|$"
-    LabelsName["avg_memory"] = "Average Memory Limit"
-    LabelsName["tao"] = "$\\it{\\tau}$"
-    LabelsName["swap_prob"] = "Swapping Probability"
-    LabelsName["fidelity_gain"] = "Expected Fidelity Sum"
-    LabelsName["succ_request_cnt"] = "$\#$Accepted Requests"
-    LabelsName["fidelity_threshold"] = "Fidelity Threshold"
-    LabelsName["min_fidelity"] = "Minimum Initial Fidelity"
-    LabelsName["entangle_time"] = "Entangling Time"
-    LabelsName["entangle_prob"] = "Entangling Probablity"
+    OVERRIDE_LABEL_EVERY = None
 
     for Path in PathNames:
-        for Xlabel in Xlabels:
-            for Ylabel in Ylabels:
-                dataFileName = Path + '_' + Xlabel + '_' + Ylabel + '.ans'
-                if Xlabel == "request_cnt":
-                    (Ystart, Yend, Yinternal) = (5, 30, 5)
-                if Xlabel == "time_limit":
-                    (Ystart, Yend, Yinternal) = (5, 30, 5)
-                if Xlabel == "tao":
-                    (Ystart, Yend, Yinternal) = (5, 30, 5)
-                if Xlabel == "fidelity_threshold":
-                    (Ystart, Yend, Yinternal) = (5, 30, 5)
-                if Xlabel == "avg_memory":
-                    (Ystart, Yend, Yinternal) = (5, 30, 5)
-                if Xlabel == "min_fidelity":
-                    (Ystart, Yend, Yinternal) = (5, 30, 5)
-                if Xlabel == "swap_prob":
-                    (Ystart, Yend, Yinternal) = (5, 30, 5)
-                if Xlabel == "entangle_prob":
-                    (Ystart, Yend, Yinternal) = (0, 2e-4, 4e-5)
-
-                ChartGenerator(dataFileName, Xlabel, Ylabel, LabelsName[Xlabel], LabelsName[Ylabel], 0, 0, Ystart, Yend, Yinternal)
-
-    # Xlabel
-    # 0 #RequestPerRound
-    # 1 totalRequest
-    # 2 #nodes
-    # 3 r
-    # 4 swapProbability
-    # 5 alpha
-    # 6 SocialNetworkDensity
-
-    # Ylabel
-    # 0 algorithmRuntime 
-    # 1 waitingTime
-    # 2 idleTime
-    # 3 usedQubits
-    # 4 temporaryRatio
-
-    # beta = "$\\it{\\beta}$ (# Req. per Time Slot) "
-    # waiting = "Avg. Waiting Time"
-    # swap = "Succ. Prob. of Swap. $\\mathcal{Q(v)}$"
-    # runtime = "Runtime (s)"
-    # ratio = "Temp. Sto. Ratio (%)"
-    # alpha = "$\\it{\\alpha}$ "
-    # timeslot = "Time Slot"
-    # remain = "# Remain. Req."
-    # r = "Max. Sto. Time $\\it{r}$ (# Time Slots)"
-
-
-    # # rpr + waiting
-    # ChartGenerator(getFilename(0, 1), beta, waiting, 0, 0, 0, 15, 3)
-    
-    # # alpha + ratio
-    # # ChartGenerator(getFilename(5, 4), alpha, ratio, -4, -2, 0, 100, 20)
-    
-    # # q + waiting
-    # ChartGenerator(getFilename(4, 1), swap, waiting, 0, 0, 0, 125, 25)
-    
-    # # q + ratio
-    # # ChartGenerator(getFilename(4, 4), swap, ratio, 0, -2, 0, 100, 20)
-
-    # # alpha + waiting
-    # ChartGenerator(getFilename(5, 1), alpha, waiting, -3, 0, 0, 30, 6)
-
-    # # r + waiting
-    # ChartGenerator(getFilename(3, 1), r, waiting, 0, 0, 1.9, 2.4, 0.2)
-    
-    # # timeslot + remain
-    # ChartGenerator("Timeslot_#remainRequest.txt", timeslot, remain + " (%)", 0, -2, 0, 100, 20)
+        for X in Xlabels:
+            for Y in Ylabels:
+                fname = f"{Path}_{X}_{Y}.ans"
+                ChartGenerator(fname, X, Y, label_every=OVERRIDE_LABEL_EVERY)
