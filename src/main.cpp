@@ -394,7 +394,8 @@ vector<SDpair> generate_requests_purify_needed(Graph &graph, int requests_cnt, i
 vector<SDpair> generate_stratified_requests(
     Graph &graph,
     int requests_cnt,
-    double purification_fraction = 0.40) {
+    double purification_fraction = 0.35,
+    double common_contention_fraction = 0.92) {
     const int node_count = graph.get_num_nodes();
     const double threshold = graph.get_fidelity_threshold();
     const double A = graph.get_A(), B = graph.get_B();
@@ -478,6 +479,7 @@ vector<SDpair> generate_stratified_requests(
     };
 
     vector<pair<double, SDpair>> common_candidates_by_fidelity;
+    map<SDpair, Path> common_candidate_paths;
     vector<SDpair> purification_candidates;
     map<int, array<int, 3>> diagnostics;
 
@@ -504,6 +506,8 @@ vector<SDpair> generate_stratified_requests(
                     {base_fidelity, {source, destination}});
                 common_candidates_by_fidelity.push_back(
                     {base_fidelity, {destination, source}});
+                common_candidate_paths[{source, destination}] = path;
+                common_candidate_paths[{destination, source}] = path;
                 diagnostics[hops][1]++;
                 continue;
             }
@@ -548,8 +552,74 @@ vector<SDpair> generate_stratified_requests(
                 common_candidates_by_fidelity[i].second);
     }
 
+    // A fidelity contrast only affects admission when the two strata compete
+    // for some of the same resources.  Select the topology node covered by the
+    // largest number of candidates in both strata as a shared bottleneck.  The
+    // remaining common requests stay topology-wide, so the workload is not a
+    // single artificial hotspot.  This selection is physical and independent
+    // of every algorithm's output.
+    int common_hotspot = -1;
+    vector<array<int, 2>> hotspot_counts(node_count, {0, 0});
+    auto count_hotspot_candidates = [&] (
+        const vector<SDpair>& candidates,
+        int stratum) {
+        for(const SDpair& request : candidates) {
+            set<int> path_nodes(
+                common_candidate_paths[request].begin(),
+                common_candidate_paths[request].end());
+            for(int node : path_nodes) hotspot_counts[node][stratum]++;
+        }
+    };
+    count_hotspot_candidates(marginal_common_candidates, 0);
+    count_hotspot_candidates(high_common_candidates, 1);
+    for(int node = 0; node < node_count; ++node) {
+        if(common_hotspot == -1
+           || min(hotspot_counts[node][0], hotspot_counts[node][1])
+              > min(hotspot_counts[common_hotspot][0],
+                    hotspot_counts[common_hotspot][1])) {
+            common_hotspot = node;
+        }
+    }
+    auto select_hotspot_candidates = [&] (
+        const vector<SDpair>& candidates,
+        bool select_hotspot) {
+        vector<SDpair> filtered;
+        for(const SDpair& request : candidates) {
+            const Path& path = common_candidate_paths[request];
+            const bool uses_hotspot =
+                find(path.begin(), path.end(), common_hotspot) != path.end();
+            if(uses_hotspot == select_hotspot)
+                filtered.push_back(request);
+        }
+        return filtered;
+    };
+    vector<SDpair> marginal_hotspot_candidates;
+    vector<SDpair> high_hotspot_candidates;
+    vector<SDpair> marginal_regular_candidates;
+    vector<SDpair> high_regular_candidates;
+    if(common_hotspot != -1
+       && hotspot_counts[common_hotspot][0] > 0
+       && hotspot_counts[common_hotspot][1] > 0) {
+        marginal_hotspot_candidates = select_hotspot_candidates(
+            marginal_common_candidates, true);
+        high_hotspot_candidates = select_hotspot_candidates(
+            high_common_candidates, true);
+        marginal_regular_candidates = select_hotspot_candidates(
+            marginal_common_candidates, false);
+        high_regular_candidates = select_hotspot_candidates(
+            high_common_candidates, false);
+    } else {
+        common_hotspot = -1;
+        marginal_regular_candidates = marginal_common_candidates;
+        high_regular_candidates = high_common_candidates;
+    }
+
     if(purification_fraction < 0.0) purification_fraction = 0.0;
     if(purification_fraction > 1.0) purification_fraction = 1.0;
+    if(common_contention_fraction < 0.0)
+        common_contention_fraction = 0.0;
+    if(common_contention_fraction > 1.0)
+        common_contention_fraction = 1.0;
     int purification_target = (int)lround(
         requests_cnt * purification_fraction);
     int common_target = requests_cnt - purification_target;
@@ -614,12 +684,51 @@ vector<SDpair> generate_stratified_requests(
     marginal_common_requests.reserve(marginal_common_target);
     high_common_requests.reserve(high_common_target);
     purification_requests.reserve(purification_target);
-    append_repeated(
-        marginal_common_candidates,
+    auto append_mixed_contention = [&] (
+        const vector<SDpair>& hotspot_candidates,
+        const vector<SDpair>& regular_candidates,
+        int target,
+        vector<SDpair>& output) {
+        int hotspot_target = common_hotspot == -1
+            ? 0
+            : (int)lround(target * common_contention_fraction);
+        int regular_target = target - hotspot_target;
+        if(hotspot_candidates.empty()) {
+            hotspot_target = 0;
+            regular_target = target;
+        }
+        if(regular_candidates.empty()) {
+            hotspot_target = target;
+            regular_target = 0;
+        }
+
+        vector<SDpair> hotspot_requests;
+        vector<SDpair> regular_requests;
+        append_repeated(
+            hotspot_candidates, hotspot_target, hotspot_requests);
+        append_repeated(
+            regular_candidates, regular_target, regular_requests);
+
+        int hotspot_position = 0, regular_position = 0;
+        for(int position = 1; position <= target; ++position) {
+            const int desired_hotspot = (int)lround(
+                position * (target > 0
+                    ? (double)hotspot_target / target
+                    : 0.0));
+            if(hotspot_position < desired_hotspot)
+                output.push_back(hotspot_requests[hotspot_position++]);
+            else
+                output.push_back(regular_requests[regular_position++]);
+        }
+    };
+    append_mixed_contention(
+        marginal_hotspot_candidates,
+        marginal_regular_candidates,
         marginal_common_target,
         marginal_common_requests);
-    append_repeated(
-        high_common_candidates,
+    append_mixed_contention(
+        high_hotspot_candidates,
+        high_regular_candidates,
         high_common_target,
         high_common_requests);
     append_repeated(
@@ -685,6 +794,14 @@ vector<SDpair> generate_stratified_requests(
              << " ... " << median_common_fidelity
              << " ... " << maximum_common_fidelity << endl;
     }
+    if(common_hotspot != -1) {
+        cerr << "  common contention hotspot=" << common_hotspot
+             << " target fraction=" << common_contention_fraction
+             << " marginal candidates="
+             << marginal_hotspot_candidates.size()
+             << " high candidates=" << high_hotspot_candidates.size()
+             << endl;
+    }
     for(const auto& [hops, count] : diagnostics) {
         cerr << "  hop=" << hops
              << " candidates=" << count[0]
@@ -723,7 +840,8 @@ int main(){
     // The default workload itself is stratified below.  hop_count is only the
     // requested distance in the dedicated hop_count experiment.
     default_setting["hop_count"]=2;
-    default_setting["purification_request_fraction"]=0.40;
+    default_setting["purification_request_fraction"]=0.35;
+    default_setting["common_contention_fraction"]=0.92;
     default_setting["delta_P"]=0.01;
     map<string, vector<double>> change_parameter;
     change_parameter["request_cnt"] = {80,100,120,140,160};
@@ -777,7 +895,8 @@ int main(){
         const int total_cnt = 200;  // pool must cover max(request_cnt)=160
         default_requests[r] = generate_stratified_requests(
             graph, total_cnt,
-            default_setting["purification_request_fraction"]);
+            default_setting["purification_request_fraction"],
+            default_setting["common_contention_fraction"]);
 
         {
             map<int, int> hop_dist;
