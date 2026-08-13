@@ -52,7 +52,7 @@ vector<SDpair> generate_requests(Graph &graph, int requests_cnt, int length_lowe
     vector<SDpair> cand;
     random_device rd;
     default_random_engine generator = default_random_engine(rd());
-    uniform_int_distribution<int> unif(0, 1e9);
+    uniform_int_distribution<int> repeat_dist(3, 6);
     for(int i = 0; i < n; i++) {
         for(int j = 0; j < n; j++) {
             if(i == j) continue;
@@ -63,22 +63,24 @@ vector<SDpair> generate_requests(Graph &graph, int requests_cnt, int length_lowe
         }
     }
 
-    random_shuffle(cand.begin(), cand.end());
+    if(cand.empty()) {
+        cerr << "[generate_requests] no SD pairs satisfy hop range ["
+             << length_lower << ", " << length_upper << "]" << endl;
+        return {};
+    }
 
     vector<SDpair> requests;
-    for(SDpair sdpair : cand) {
-        int cnt = unif(generator) % 4 + 3;
-        while(cnt--) requests.push_back(sdpair);
-    }
-
     while((int)requests.size() < requests_cnt) {
-        requests.emplace_back(generate_new_request(n));
+        shuffle(cand.begin(), cand.end(), generator);
+        for(const SDpair& sdpair : cand) {
+            int repeat = min(repeat_dist(generator),
+                             requests_cnt - (int)requests.size());
+            while(repeat-- > 0) requests.push_back(sdpair);
+            if((int)requests.size() == requests_cnt) break;
+        }
     }
 
-    while((int)requests.size() > requests_cnt) {
-        requests.pop_back();
-    }
-
+    shuffle(requests.begin(), requests.end(), generator);
     return requests;
 }
 vector<SDpair> generate_requests_fid(Graph &graph, int requests_cnt,double fid_th,double hop_th, double fid_upper = 1) {
@@ -442,8 +444,6 @@ int main(){
         double time_eta=default_setting["time_eta"];
         double swap_prob = default_setting["swap_prob"];
         double fidelity_threshold = default_setting["fidelity_threshold"];
-        int length_upper = default_setting["path_length"] + 1;
-        int length_lower = default_setting["path_length"] - 1;
         map<string, double> input_parameter = default_setting;
         vector<map<string, map<string, double>>> result(round);
         // double entangle_lambda = input_parameter["entangle_lambda"];
@@ -460,93 +460,13 @@ int main(){
             exit(1);
         }
         Graph graph(filename, time_limit, swap_prob, avg_memory, min_fidelity, max_fidelity, fidelity_threshold, A, B, n, T, tao,Zmin,bucket_eps,time_eta,input_parameter["delta_P"],input_parameter["entangle_lambda"],input_parameter["entangle_time"]);
-        // === 混合生成 4 類 request (threshold=0.8) ===
-        // 設計原則：ZFA2 靠 purification 明顯領先，但非 purify 演算法仍有可通過的 request
-        //
-        // (A) ~55% purify-needed: 不做 purify 過不了 0.8 → ZFA2 獨佔，大幅拉開差距
-        // (B) ~15% high-fid short-path: link F>0.892，2-hop 不做 purify 也過 0.8
-        //     所有演算法都能接 → 確保 MyAlgo1/3 有基本表現
-        // (C) ~15% high-fid diverse-path: fidelity > threshold，hop 長度多樣
-        // (D) ~15% long-path: hop >= 4，fidelity > threshold
-        int total_cnt = 200;  // pool 要 >= max(request_cnt)=160
+        // Neutral workload: select SD pairs only by hop range.  Fidelity and
+        // purification feasibility are deliberately not used for filtering.
+        const int total_cnt = 200;  // pool must cover max(request_cnt)=160
+        const int min_hop = (int)default_setting["hop_count"];
+        default_requests[r] = generate_requests(
+            graph, total_cnt, min_hop, graph.get_num_nodes() - 1);
 
-        int cnt_A = (int)(total_cnt * 0.55);  // purify-needed → ZFA2 獨佔
-        int cnt_B = (int)(total_cnt * 0.15);  // high-fid short → 所有演算法都能過 (F>0.892, 2-hop)
-        int cnt_C = (int)(total_cnt * 0.15);  // high-fid diverse → MyAlgo3
-        int cnt_D = total_cnt - cnt_A - cnt_B - cnt_C;  // long-path → MyAlgo1
-
-        // (A) purify sweet spot: 只有 ZFA2 做 purify 能過 threshold
-        auto reqs_A = generate_requests_purify_needed(graph, cnt_A, 2);
-
-        // (B) high-fid short-path (hop 2~3, fidelity > threshold+0.05)
-        //     所有演算法都能接 → 比的是全局資源分配效率
-        auto reqs_B = generate_requests_fid(graph, cnt_B, fidelity_threshold + 0.05, 2, 1.0);
-        if ((int)reqs_B.size() < cnt_B) {
-            reqs_B = generate_requests_fid(graph, cnt_B, fidelity_threshold + 0.01, 2);
-        }
-
-        // (C) high-fid diverse-path: fidelity > threshold 但 hop 從 2~5 都有
-        //     關鍵：都過 threshold 所以大家都能接，但 path 長度/fidelity 差異大
-        //     MyAlgo3 的 fid^10 * Pr / mem^0.33 scoring 在這種多樣化場景下
-        //     能比固定 LP 策略更好地挑選 cost-effective 組合
-        auto reqs_C = generate_requests_fid(graph, cnt_C, fidelity_threshold, 2, 1.0);
-        if ((int)reqs_C.size() < cnt_C) {
-            reqs_C = generate_requests_fid(graph, cnt_C, fidelity_threshold - 0.02, 2);
-        }
-
-        // (D) long-path memory-hungry (hop >= 4, fidelity > threshold)
-        //     path 長 → 每條吃大量 memory → ZFA2 額外 purify 開銷雪上加霜
-        //     MyAlgo1 (LP + 零 purify 開銷) 能在相同 memory 下塞更多
-        auto reqs_D = generate_requests_fid(graph, cnt_D, fidelity_threshold, 4, 1.0);
-        if ((int)reqs_D.size() < cnt_D) {
-            reqs_D = generate_requests_fid(graph, cnt_D, fidelity_threshold - 0.03, 3);
-        }
-
-        // 合併：交錯排列 A-B-C-D 確保各類均勻分佈
-        default_requests[r].clear();
-        int pi_A = 0, pi_B = 0, pi_C = 0, pi_D = 0;
-        while ((int)default_requests[r].size() < total_cnt) {
-            // 每輪: 3A + 2B + 2C + 1D ≈ 比例 35:25:25:15
-            for (int k = 0; k < 3 && (int)default_requests[r].size() < total_cnt; k++) {
-                if (pi_A < (int)reqs_A.size()) default_requests[r].push_back(reqs_A[pi_A++]);
-            }
-            for (int k = 0; k < 2 && (int)default_requests[r].size() < total_cnt; k++) {
-                if (pi_B < (int)reqs_B.size()) default_requests[r].push_back(reqs_B[pi_B++]);
-            }
-            for (int k = 0; k < 2 && (int)default_requests[r].size() < total_cnt; k++) {
-                if (pi_C < (int)reqs_C.size()) default_requests[r].push_back(reqs_C[pi_C++]);
-            }
-            for (int k = 0; k < 1 && (int)default_requests[r].size() < total_cnt; k++) {
-                if (pi_D < (int)reqs_D.size()) default_requests[r].push_back(reqs_D[pi_D++]);
-            }
-            // 若所有 pool 都用完但還不夠，循環重用
-            if (pi_A >= (int)reqs_A.size() && pi_B >= (int)reqs_B.size() &&
-                pi_C >= (int)reqs_C.size() && pi_D >= (int)reqs_D.size()) {
-                bool has_pool = false;
-                if (!reqs_A.empty()) { pi_A = 0; has_pool = true; }
-                if (!reqs_B.empty()) { pi_B = 0; has_pool = true; }
-                if (!reqs_C.empty()) { pi_C = 0; has_pool = true; }
-                if (!reqs_D.empty()) { pi_D = 0; has_pool = true; }
-                if (!has_pool) break;
-            }
-        }
-        // fallback: 如果仍不夠
-        if ((int)default_requests[r].size() < total_cnt) {
-            auto fallback = generate_requests_fid(graph, total_cnt - (int)default_requests[r].size(), 0.5, 2);
-            for (auto &sd : fallback) default_requests[r].push_back(sd);
-        }
-        if ((int)default_requests[r].size() < total_cnt && !default_requests[r].empty()) {
-            int base = (int)default_requests[r].size();
-            int pos = 0;
-            while ((int)default_requests[r].size() < total_cnt) {
-                default_requests[r].push_back(default_requests[r][pos % base]);
-                pos++;
-            }
-        }
-        assert((int)default_requests[r].size() >= total_cnt);
-        default_requests[r].resize(total_cnt);
-
-        // === 印出最終 request 的詳細統計 ===
         {
             map<int, int> hop_dist;
             for (auto &sd : default_requests[r]) {
@@ -556,18 +476,13 @@ int main(){
             cerr << "\033[1;36m"
                  << "========== Request Generation Done ==========" << endl
                  << "  total=" << default_requests[r].size()
-                 << " | A(purify)=" << reqs_A.size()
-                 << " | B(hi-fid-short)=" << reqs_B.size()
-                 << " | C(hi-fid-diverse)=" << reqs_C.size()
-                 << " | D(long-path)=" << reqs_D.size() << endl
+                 << " | neutral SD sampling"
+                 << " | min_hop=" << min_hop << endl
                  << "  hop distribution: ";
             for (auto &[h, cnt] : hop_dist)
                 cerr << h << "hop=" << cnt << " ";
             cerr << endl
-                 << "  A(55%): purify-needed → ZFA2 exclusive advantage" << endl
-                 << "  B(15%): hi-fid short → all algos can pass (F>0.892, 2-hop)" << endl
-                 << "  C(15%): hi-fid diverse → adaptive scoring (MyAlgo3 competitive)" << endl
-                 << "  D(15%): long-path → memory efficiency (MyAlgo1 no purify overhead)" << endl
+                 << "  no fidelity/purification preselection" << endl
                  << "================================================"
                  << "\033[0m" << endl;
         }
@@ -679,9 +594,11 @@ int main(){
                         DBG_HERE("requests filled from default_requests");
                     }
                     else{
-                        DBG_HERE("before generate_requests_fid");
-                        requests=generate_requests_fid(graph,request_cnt,0,hop_count);
-                        DBG_HERE("after generate_requests_fid");
+                        DBG_HERE("before neutral request generation");
+                        requests = generate_requests(
+                            graph, request_cnt, hop_count,
+                            graph.get_num_nodes() - 1);
+                        DBG_HERE("after neutral request generation");
                     }
                     cerr << "[CKPT] requests.size()=" << requests.size() << endl;
                     DBG_HERE("before path_graph copy");

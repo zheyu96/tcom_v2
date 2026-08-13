@@ -146,7 +146,7 @@ WernerAlgo2::ZLabel WernerAlgo2::gen_leaf_label(int s,int e,int st,int tlen,int 
     int rounds = tlen - 1;
     double w_cur = Purification::pumping_werner(w_ini, rounds);
     double p_cur = Purification::pumping_success_prob(graph.get_entangle_succ_prob(s,e), w_ini, rounds);
-    double Zleaf=sqrt(-log(w_cur));
+    double Zleaf=sqrt(-log(w_cur)) + dpp.eta;
     double Pleaf=log(p_cur);
     if(Zleaf>dpp.Zhat) return ZLabel();
     return ZLabel(Bleaf,Zleaf,Pleaf,Op::LEAF,tlen-1,path_a,path_b,st,-1);

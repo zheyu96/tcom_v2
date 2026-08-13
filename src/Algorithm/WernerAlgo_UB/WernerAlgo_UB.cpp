@@ -133,7 +133,7 @@ void WernerAlgo_UB::run_dp_in_t(const Path& path, const DPParam& dpp,int t) {
                     for(int tt=st;tt<=t;tt++)
                         Bleaf+=beta[s][tt]+beta[e][tt];
                     double Zcur=1.0L-(1.0L-graph.get_link_werner(s,e))/tlen;
-                    double Zleaf=sqrt(-log(Zcur));
+                    double Zleaf=sqrt(-log(Zcur)) + dpp.eta;
                     if(Zleaf<=dpp.Zhat){
                         ZLabel L(Bleaf,Zleaf,Op::LEAF,a,b,t,-1);
                         L.ent_time={t-tlen,t};

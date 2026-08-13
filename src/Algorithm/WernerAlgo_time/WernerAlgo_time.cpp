@@ -166,7 +166,7 @@ void WernerAlgo_time::run_dp_in_t(const Path& path, const DPParam& dpp,int t) {
             vector<ZLabel> cand;
             //leaf
             if(a+1==b){
-                double Zleaf=sqrt(graph.get_edge_W(s,e));
+                double Zleaf=sqrt(graph.get_edge_W(s,e)) + dpp.eta;
                 if(Zleaf<=dpp.Zhat){
                     double Bleaf=beta[s][t-1]+beta[e][t-1]+beta[s][t]+beta[e][t];
                     ZLabel L(Bleaf,Zleaf,Op::LEAF,a,b,t,-1);

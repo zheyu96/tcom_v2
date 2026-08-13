@@ -150,7 +150,7 @@ WernerAlgo3::ZLabel WernerAlgo3::gen_leaf_label(int s,int e,int st,int tlen,int 
         w_cur=(4.0L*w_cur*w_ini+w_cur+w_ini)/(3.0L*w_cur*w_ini+3.0L);
         p_cur*=graph.get_entangle_succ_prob(s,e);
     }
-    double Zleaf=sqrt(-log(w_cur));
+    double Zleaf=sqrt(-log(w_cur)) + dpp.eta;
     double Pleaf=log(p_cur);
     if(Zleaf>dpp.Zhat) return ZLabel();
     return ZLabel(Bleaf,Zleaf,Pleaf,Op::LEAF,tlen-1,path_a,path_b,st,-1);
