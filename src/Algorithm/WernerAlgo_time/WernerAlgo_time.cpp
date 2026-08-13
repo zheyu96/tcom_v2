@@ -25,7 +25,7 @@ void WernerAlgo_time::variable_initialize() {
     dpp.Zhat = sqrt(-log(w_th))+1e-9;
     dpp.Zmin = graph.get_Zmin();
     dpp.T    = time_limit-1;
-    dpp.eta  = graph.get_tao()/graph.get_time_limit();
+    dpp.eta  = graph.get_tao()/graph.get_T();
     beta.assign(V, vector<double>(T, INF));
 
     for (int v = 0; v < V; ++v) {
@@ -461,4 +461,3 @@ void WernerAlgo_time::run() {
     update_res();
     cerr << "[" << algorithm_name << "] end" << endl;
 }
- 
