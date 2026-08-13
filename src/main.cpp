@@ -1,6 +1,7 @@
 
 #include "./config.h"
 #include <sys/resource.h>
+#include <array>
 #include <new>
 #include <stdexcept>
 #include "Network/Graph/Graph.h"
@@ -383,6 +384,242 @@ vector<SDpair> generate_requests_purify_needed(Graph &graph, int requests_cnt, i
     return requests;
 }
 
+// Build the default workload from physical feasibility classes, never from an
+// algorithm's output.  "common" requests already meet the threshold on a
+// shortest 1--2-hop path.  "purification" requests miss the threshold without
+// purification but meet it after at most three pumping rounds per link.
+// Keeping most requests in the common class prevents the all-zero workload,
+// while the purification class supplies the pressure needed to distinguish
+// purification-aware algorithms.
+vector<SDpair> generate_stratified_requests(
+    Graph &graph,
+    int requests_cnt,
+    double purification_fraction = 0.30) {
+    const int node_count = graph.get_num_nodes();
+    const double threshold = graph.get_fidelity_threshold();
+    const double A = graph.get_A(), B = graph.get_B();
+    const double n_param = graph.get_n();
+    const double T = graph.get_T(), tao = graph.get_tao();
+    const int max_purification_rounds = 3;
+
+    auto shortest_path = [&](int source, int destination) -> Path {
+        vector<int> parent(node_count, -1);
+        queue<int> pending;
+        parent[source] = source;
+        pending.push(source);
+        while(!pending.empty() && parent[destination] == -1) {
+            int node = pending.front();
+            pending.pop();
+            for(int next : graph.adj_list[node]) {
+                if(parent[next] != -1) continue;
+                parent[next] = node;
+                pending.push(next);
+            }
+        }
+        if(parent[destination] == -1) return {};
+
+        Path path;
+        for(int node = destination; node != source; node = parent[node])
+            path.push_back(node);
+        path.push_back(source);
+        reverse(path.begin(), path.end());
+        return path;
+    };
+
+    auto t2F = [&](double time) -> double {
+        if(time >= 1e5) return 0.0;
+        return A + B * exp(-pow(time / T, n_param));
+    };
+    auto F2t = [&](double fidelity) -> double {
+        if(fidelity <= A + 1e-9) return 1e9;
+        return T * pow(-log((fidelity - A) / B), 1.0 / n_param);
+    };
+    auto pass_tao = [&](double fidelity) -> double {
+        return t2F(F2t(fidelity) + tao);
+    };
+    auto swap_fidelity = [&](double left, double right) -> double {
+        if(left <= A + 1e-9 || right <= A + 1e-9) return 0.0;
+        return left * right
+             + (1.0 / 3.0) * (1.0 - left) * (1.0 - right);
+    };
+
+    function<double(int, int, const vector<double>&, const vector<int>&)>
+        balanced_fidelity;
+    balanced_fidelity = [&] (
+        int left,
+        int right,
+        const vector<double>& link_fidelity,
+        const vector<int>& purification_rounds) -> double {
+        if(right == left + 1) {
+            double raw = link_fidelity[left];
+            double purified = raw;
+            for(int round = 0; round < purification_rounds[left]; ++round) {
+                const double current_bar = 1.0 - purified;
+                const double raw_bar = 1.0 - raw;
+                const double denominator =
+                    purified * raw
+                    + (1.0 / 3.0) * purified * raw_bar
+                    + (1.0 / 3.0) * current_bar * raw
+                    + (5.0 / 9.0) * current_bar * raw_bar;
+                const double numerator =
+                    purified * raw + (1.0 / 9.0) * current_bar * raw_bar;
+                purified = numerator / denominator;
+            }
+            return pass_tao(purified);
+        }
+
+        const int middle = (left + right) / 2;
+        const double left_fidelity = balanced_fidelity(
+            left, middle, link_fidelity, purification_rounds);
+        const double right_fidelity = balanced_fidelity(
+            middle, right, link_fidelity, purification_rounds);
+        return swap_fidelity(
+            pass_tao(left_fidelity), pass_tao(right_fidelity));
+    };
+
+    vector<SDpair> common_candidates;
+    vector<SDpair> purification_candidates;
+    map<int, array<int, 3>> diagnostics;
+
+    for(int source = 0; source < node_count; ++source) {
+        for(int destination = source + 1; destination < node_count;
+            ++destination) {
+            Path path = shortest_path(source, destination);
+            const int hops = (int)path.size() - 1;
+            if(hops < 1 || hops > 2) continue;
+
+            vector<double> link_fidelity(hops);
+            for(int link = 0; link < hops; ++link) {
+                link_fidelity[link] = graph.get_F_init(
+                    path[link], path[link + 1]);
+            }
+
+            vector<int> no_purification(hops, 0);
+            const double base_fidelity = balanced_fidelity(
+                0, hops, link_fidelity, no_purification);
+            diagnostics[hops][0]++;
+
+            if(base_fidelity >= threshold) {
+                common_candidates.push_back({source, destination});
+                common_candidates.push_back({destination, source});
+                diagnostics[hops][1]++;
+                continue;
+            }
+
+            bool feasible_with_purification = false;
+            for(int rounds = 1; rounds <= max_purification_rounds; ++rounds) {
+                vector<int> purification(hops, rounds);
+                if(balanced_fidelity(0, hops, link_fidelity, purification)
+                   >= threshold) {
+                    feasible_with_purification = true;
+                    break;
+                }
+            }
+            if(feasible_with_purification) {
+                purification_candidates.push_back({source, destination});
+                purification_candidates.push_back({destination, source});
+                diagnostics[hops][2]++;
+            }
+        }
+    }
+
+    if(purification_fraction < 0.0) purification_fraction = 0.0;
+    if(purification_fraction > 1.0) purification_fraction = 1.0;
+    int purification_target = (int)lround(
+        requests_cnt * purification_fraction);
+    int common_target = requests_cnt - purification_target;
+
+    if(common_candidates.empty()) {
+        cerr << "[request_mix] WARNING: common-feasible pool is empty" << endl;
+        purification_target = requests_cnt;
+        common_target = 0;
+    }
+    if(purification_candidates.empty()) {
+        cerr << "[request_mix] WARNING: purification-feasible pool is empty"
+             << endl;
+        common_target = requests_cnt;
+        purification_target = 0;
+    }
+    if(common_candidates.empty() && purification_candidates.empty()) {
+        cerr << "[request_mix] ERROR: no physically feasible 1--2-hop requests"
+             << endl;
+        return {};
+    }
+    const double effective_purification_fraction = requests_cnt > 0
+        ? (double)purification_target / requests_cnt
+        : 0.0;
+
+    random_device random_source;
+    default_random_engine generator(random_source());
+    uniform_int_distribution<int> repeat_distribution(3, 6);
+    auto append_repeated = [&] (
+        vector<SDpair> candidates,
+        int target,
+        vector<SDpair>& output) {
+        int added = 0;
+        while(added < target) {
+            shuffle(candidates.begin(), candidates.end(), generator);
+            for(const SDpair& request : candidates) {
+                int repeat = min(repeat_distribution(generator), target - added);
+                for(int copy = 0; copy < repeat; ++copy)
+                    output.push_back(request);
+                added += repeat;
+                if(added == target) break;
+            }
+        }
+    };
+
+    vector<SDpair> common_requests;
+    vector<SDpair> purification_requests;
+    common_requests.reserve(common_target);
+    purification_requests.reserve(purification_target);
+    append_repeated(common_candidates, common_target, common_requests);
+    append_repeated(
+        purification_candidates, purification_target,
+        purification_requests);
+
+    // The request-count experiment consumes prefixes of this pool.  Mix in
+    // ten-request blocks so every 80/100/... prefix retains the same 70/30
+    // composition instead of depending on one global shuffle.
+    vector<SDpair> requests;
+    requests.reserve(requests_cnt);
+    int common_position = 0, purification_position = 0;
+    while((int)requests.size() < requests_cnt) {
+        const int block_size = min(10, requests_cnt - (int)requests.size());
+        const int prefix_end = (int)requests.size() + block_size;
+        const int desired_purification = (int)lround(
+            prefix_end * effective_purification_fraction);
+        int block_purification =
+            desired_purification - purification_position;
+        block_purification = min(
+            block_purification,
+            (int)purification_requests.size() - purification_position);
+        const int block_common = block_size - block_purification;
+
+        vector<SDpair> block;
+        block.reserve(block_size);
+        for(int i = 0; i < block_common; ++i)
+            block.push_back(common_requests[common_position++]);
+        for(int i = 0; i < block_purification; ++i)
+            block.push_back(
+                purification_requests[purification_position++]);
+        shuffle(block.begin(), block.end(), generator);
+        requests.insert(requests.end(), block.begin(), block.end());
+    }
+
+    cerr << "[request_mix] threshold=" << threshold
+         << " T=" << T << " tao=" << tao
+         << " | selected common=" << common_target
+         << " purification=" << purification_target << endl;
+    for(const auto& [hops, count] : diagnostics) {
+        cerr << "  hop=" << hops
+             << " candidates=" << count[0]
+             << " common=" << count[1]
+             << " purification=" << count[2] << endl;
+    }
+    return requests;
+}
+
 int main(){
     string file_path = "../data/";
 
@@ -409,7 +646,10 @@ int main(){
     default_setting["Zmin"]=0.02702867239;
     default_setting["bucket_eps"]=0.01;
     default_setting["time_eta"]=0.001;
-    default_setting["hop_count"]=3;
+    // The default workload itself is stratified below.  hop_count is only the
+    // requested distance in the dedicated hop_count experiment.
+    default_setting["hop_count"]=2;
+    default_setting["purification_request_fraction"]=0.30;
     default_setting["delta_P"]=0.01;
     map<string, vector<double>> change_parameter;
     change_parameter["request_cnt"] = {80,100,120,140,160};
@@ -460,12 +700,10 @@ int main(){
             exit(1);
         }
         Graph graph(filename, time_limit, swap_prob, avg_memory, min_fidelity, max_fidelity, fidelity_threshold, A, B, n, T, tao,Zmin,bucket_eps,time_eta,input_parameter["delta_P"],input_parameter["entangle_lambda"],input_parameter["entangle_time"]);
-        // Neutral workload: select SD pairs only by hop range.  Fidelity and
-        // purification feasibility are deliberately not used for filtering.
         const int total_cnt = 200;  // pool must cover max(request_cnt)=160
-        const int min_hop = (int)default_setting["hop_count"];
-        default_requests[r] = generate_requests(
-            graph, total_cnt, min_hop, graph.get_num_nodes() - 1);
+        default_requests[r] = generate_stratified_requests(
+            graph, total_cnt,
+            default_setting["purification_request_fraction"]);
 
         {
             map<int, int> hop_dist;
@@ -476,13 +714,12 @@ int main(){
             cerr << "\033[1;36m"
                  << "========== Request Generation Done ==========" << endl
                  << "  total=" << default_requests[r].size()
-                 << " | neutral SD sampling"
-                 << " | min_hop=" << min_hop << endl
+                 << " | physically stratified SD sampling" << endl
                  << "  hop distribution: ";
             for (auto &[h, cnt] : hop_dist)
                 cerr << h << "hop=" << cnt << " ";
             cerr << endl
-                 << "  no fidelity/purification preselection" << endl
+                 << "  target mix: common=70%, purification-needed=30%" << endl
                  << "================================================"
                  << "\033[0m" << endl;
         }
@@ -582,7 +819,7 @@ int main(){
 
                     ofs << "--------------- in round " << r << " -------------" <<endl;
                     vector<pair<int, int>> requests;
-                    if(hop_count==3){
+                    if(X_name != "hop_count"){
                         int idx=0;
                         for(int i = 0; i < request_cnt; i++) {
                             /* while(graph.get_ini_fid(default_requests[r][idx].first,default_requests[r][idx].second)<fidelity_threshold){
@@ -594,11 +831,10 @@ int main(){
                         DBG_HERE("requests filled from default_requests");
                     }
                     else{
-                        DBG_HERE("before neutral request generation");
+                        DBG_HERE("before exact-hop request generation");
                         requests = generate_requests(
-                            graph, request_cnt, hop_count,
-                            graph.get_num_nodes() - 1);
-                        DBG_HERE("after neutral request generation");
+                            graph, request_cnt, hop_count, hop_count);
+                        DBG_HERE("after exact-hop request generation");
                     }
                     cerr << "[CKPT] requests.size()=" << requests.size() << endl;
                     DBG_HERE("before path_graph copy");
