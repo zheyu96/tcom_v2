@@ -1,7 +1,7 @@
 import numpy as np
 import math
 import os
-import latex
+#import latex
 import matplotlib.pyplot as plt
 import matplotlib.transforms
 import matplotlib
