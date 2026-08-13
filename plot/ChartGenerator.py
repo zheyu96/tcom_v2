@@ -153,7 +153,7 @@ class ChartGenerator:
         'fidelity_gain':{
             'request_cnt': (30, 123, 10, 3), 'tao': (30, 60, 5, 2),
             'time_limit': (30, 55, 5, 1), 'avg_memory': (0, 30, 5, 2),
-            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (10, 30, 5, 2),
+            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 85, 5, 4),
             'swap_prob': (30, 70, 5, 2), 'entangle_time': "auto",
             'hop_count':(10,90,5,3),
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
@@ -162,20 +162,20 @@ class ChartGenerator:
             'request_cnt': (40, 160, 5, 8), 'tao': (40, 55, 5, 1),
             'time_limit': (45, 60, 5, 1), 'avg_memory': (0, 45, 5, 3),
             'min_fidelity': (65, 95, 5, 1), 'fidelity_threshold': (15, 40, 5, 1),
-            'swap_prob': (25, 70, 5, 1), 'hop_count':(20,105,5,7),
+            'swap_prob': (35, 72, 5, 1), 'hop_count':(20,105,5,7),
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'pure_fidelity':{
             'request_cnt': (50, 80, 5, 2), 'tao': (50, 70, 1, 5),
             'time_limit': (45, 70, 1, 5), 'avg_memory': (20, 40, 1, 5),
-            'min_fidelity': (50, 80, 1, 5), 'fidelity_threshold': (50, 70, 1, 5),
+            'min_fidelity': (50, 80, 1, 5), 'fidelity_threshold': (0, 70, 5, 2),
             'swap_prob': "auto", 'entangle_time': "auto", 'entangle_prob': "auto",
             'hop_count': "auto",
             'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'actual_req_cnt':{
-            'request_cnt': (0,100,5,4), 'tao': (45,65,5,1),
+            'request_cnt': (40,160,10,4), 'tao': (45,65,5,1),
             'time_limit': (50,75,5,1), 'avg_memory': (10,80,5,2),
             'min_fidelity': "auto", 'fidelity_threshold': (25,85,5,1),
             'swap_prob': (50,75,5,1), 'hop_count': "auto",
