@@ -400,10 +400,10 @@ vector<SDpair> generate_stratified_requests(
     Graph &graph,
     int requests_cnt,
     double purification_fraction = 0.25,
-    double hotspot_fraction = 0.80,
+    double hotspot_fraction = 0.65,
     int minimum_hops = 2,
     int maximum_hops = 4,
-    int hotspot_candidate_limit = 1) {
+    int hotspot_candidate_limit = 3) {
     const int node_count = graph.get_num_nodes();
     const double threshold = graph.get_fidelity_threshold();
     const double A = graph.get_A(), B = graph.get_B();
@@ -489,6 +489,7 @@ vector<SDpair> generate_stratified_requests(
     struct CandidateProfile {
         SDpair request;
         Path path;
+        vector<int> feasible_two_hop_intermediates;
         double base_fidelity;
         bool common_feasible;
     };
@@ -524,13 +525,60 @@ vector<SDpair> generate_stratified_requests(
                 0, hops, link_fidelity, no_purification);
             diagnostics[hops][0]++;
 
-            if(base_fidelity >= threshold) {
+            // Enumerate every threshold-feasible two-hop route.  A hotspot
+            // request is useful for comparing path/numerology algorithms only
+            // when the same SD pair also has a feasible route around the
+            // hotspot; considering just one BFS path hides that trade-off.
+            vector<int> feasible_two_hop_intermediates;
+            Path best_common_path;
+            double best_common_fidelity = -1.0;
+            if(minimum_hops <= 2 && maximum_hops >= 2) {
+                for(int intermediate : graph.adj_list[source]) {
+                    if(!graph.adj_set[intermediate].count(destination))
+                        continue;
+                    vector<double> two_hop_fidelity{
+                        graph.get_F_init(source, intermediate),
+                        graph.get_F_init(intermediate, destination)};
+                    vector<int> no_two_hop_purification(2, 0);
+                    const double candidate_fidelity = balanced_fidelity(
+                        0, 2, two_hop_fidelity,
+                        no_two_hop_purification);
+                    if(candidate_fidelity + EPS < threshold) continue;
+                    feasible_two_hop_intermediates.push_back(intermediate);
+                    if(candidate_fidelity > best_common_fidelity) {
+                        best_common_fidelity = candidate_fidelity;
+                        best_common_path = {
+                            source, intermediate, destination};
+                    }
+                }
+            }
+
+            if(!feasible_two_hop_intermediates.empty()) {
                 candidate_profiles.push_back({
-                    {source, destination}, path, base_fidelity, true});
-                for(int position = 1; position + 1 < (int)path.size();
-                    ++position) {
-                    common_transit_load[path[position]]++;
-                    all_transit_load[path[position]]++;
+                    {source, destination}, best_common_path,
+                    feasible_two_hop_intermediates,
+                    best_common_fidelity, true});
+                for(int intermediate : feasible_two_hop_intermediates) {
+                    all_transit_load[intermediate]++;
+                    if(feasible_two_hop_intermediates.size() >= 2)
+                        common_transit_load[intermediate]++;
+                }
+                diagnostics[hops][1]++;
+                continue;
+            }
+
+            // Longer shortest paths become common-feasible when the generated
+            // links are sufficiently good.  Keeping them is important: paths
+            // of length at least three are the first ones with genuinely
+            // different swapping-tree/numerology resource profiles.
+            if(base_fidelity + EPS >= threshold) {
+                candidate_profiles.push_back({
+                    {source, destination}, path, {}, base_fidelity, true});
+                for(int position = 1;
+                    position + 1 < (int)path.size(); ++position) {
+                    const int intermediate = path[position];
+                    common_transit_load[intermediate]++;
+                    all_transit_load[intermediate]++;
                 }
                 diagnostics[hops][1]++;
                 continue;
@@ -547,7 +595,7 @@ vector<SDpair> generate_stratified_requests(
             }
             if(feasible_with_purification) {
                 candidate_profiles.push_back({
-                    {source, destination}, path, base_fidelity, false});
+                    {source, destination}, path, {}, base_fidelity, false});
                 for(int position = 1; position + 1 < (int)path.size();
                     ++position)
                     all_transit_load[path[position]]++;
@@ -583,16 +631,27 @@ vector<SDpair> generate_stratified_requests(
     for(const CandidateProfile& profile : candidate_profiles) {
         int pressure = 0;
         bool crosses_hotspot = false;
-        for(int position = 1; position + 1 < (int)profile.path.size();
-            ++position) {
-            const int node = profile.path[position];
+        bool has_background_alternative = false;
+        vector<int> relevant_intermediates =
+            profile.feasible_two_hop_intermediates;
+        if(relevant_intermediates.empty()) {
+            for(int position = 1;
+                position + 1 < (int)profile.path.size(); ++position)
+                relevant_intermediates.push_back(profile.path[position]);
+        }
+        for(int node : relevant_intermediates) {
             pressure = max(pressure, hotspot_load[node]);
             crosses_hotspot = crosses_hotspot || hotspot_nodes.count(node);
+            has_background_alternative = has_background_alternative
+                || !hotspot_nodes.count(node);
         }
 
         auto add_orientation = [&](SDpair request) {
             ScoredRequest candidate{
-                request, profile.base_fidelity, pressure, crosses_hotspot};
+                request, profile.base_fidelity, pressure,
+                crosses_hotspot
+                    && (!profile.common_feasible
+                        || has_background_alternative)};
             if(profile.common_feasible)
                 common_candidates_by_fidelity.push_back(candidate);
             else
@@ -875,17 +934,17 @@ int main(){
     default_setting["request_cnt"] = 80;
     default_setting["entangle_lambda"] = 0.045;
     default_setting["time_limit"] = 13;
-    // avg_memory 必須夠緊張，讓演算法無法服務所有可行 request → 不同策略做不同取捨
-    // 13/8: 太寬裕 → 所有非 purify 演算法結果一樣。5: 強制競爭
+    // A memory budget of 10 creates measurable contention without making the
+    // experiment overwhelmingly capacity-limited.
     default_setting["avg_memory"] = 10;
     default_setting["tao"] = 0.002;
     default_setting["path_length"] = 3;
-    // === Purification 甜蜜點參數 (threshold=0.8) ===
-    // 2-hop 不做 purify 需 F>0.892; 3-hop 需 F>0.93
-    // min_fidelity=0.80: 大量 link 落在 sweet spot [0.80, 0.892]，purify 優勢顯著
-    // max_fidelity=0.95: 少數 link F>0.892 讓非 purify 演算法有少量 2-hop 可過
+    // With threshold 0.8, max_fidelity=0.99 leaves a controlled set of
+    // no-purification-feasible three-hop requests.  Those longer paths expose
+    // swapping-tree and time-slot allocation differences that two-hop-only
+    // workloads cannot distinguish.
     default_setting["min_fidelity"] = 0.80;
-    default_setting["max_fidelity"] = 0.95;
+    default_setting["max_fidelity"] = 0.99;
     default_setting["swap_prob"] = 0.9;
     default_setting["fidelity_threshold"] = 0.8;
     default_setting["entangle_time"] = 0.00025;
@@ -897,10 +956,10 @@ int main(){
     // requested distance in the dedicated hop_count experiment.
     default_setting["hop_count"]=2;
     default_setting["purification_request_fraction"]=0.25;
-    default_setting["request_hotspot_fraction"]=0.80;
+    default_setting["request_hotspot_fraction"]=0.65;
     default_setting["request_min_hops"]=2;
     default_setting["request_max_hops"]=4;
-    default_setting["request_hotspot_candidate_limit"]=1;
+    default_setting["request_hotspot_candidate_limit"]=3;
     default_setting["delta_P"]=0.01;
     map<string, vector<double>> change_parameter;
     change_parameter["request_cnt"] = {80,100,120,140,160};
@@ -1120,6 +1179,21 @@ int main(){
                     for(const auto& [sdpair, pathss] : raw_paths) {
                         for(const Path& path : pathss) {
                             paths_st[sdpair].insert(path);
+                        }
+                    }
+
+                    // Give every algorithm the same explicit two-hop
+                    // alternatives.  The request generator deliberately
+                    // selects hotspot SD pairs with at least one feasible
+                    // background intermediate; relying only on capacity-
+                    // driven Greedy repetitions can otherwise omit that route.
+                    for(const SDpair& sdpair : requests) {
+                        const int source = sdpair.first;
+                        const int destination = sdpair.second;
+                        for(int intermediate : graph.adj_list[source]) {
+                            if(graph.adj_set[intermediate].count(destination))
+                                paths_st[sdpair].insert(
+                                    {source, intermediate, destination});
                         }
                     }
 
