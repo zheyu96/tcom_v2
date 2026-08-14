@@ -384,17 +384,26 @@ vector<SDpair> generate_requests_purify_needed(Graph &graph, int requests_cnt, i
     return requests;
 }
 
-// Build the default workload from physical feasibility classes, never from an
-// algorithm's output.  "common" requests already meet the threshold on a
-// shortest 1--2-hop path and are split into lower- and higher-fidelity strata.
+// Build the default workload from topology and physical feasibility, never
+// from an algorithm's output.  "common" requests already meet the threshold
+// without purification and are split into lower- and higher-fidelity strata.
 // "purification" requests miss the threshold without purification but meet it
-// after at most three pumping rounds per link.  Keeping most requests in the
-// common class prevents the all-zero workload, while its fidelity strata give
-// fidelity-aware algorithms a heterogeneous (but still shared) workload.
+// after at most three pumping rounds per link.
+//
+// To exercise node-time packing decisions, a controlled fraction of every
+// stratum is sampled from SD pairs whose shortest paths traverse the busiest
+// intermediate nodes in the common-feasible candidate pool.  The remaining
+// requests are sampled from the background pool.  This creates moderate,
+// topology-dependent resource pressure while keeping one shared, algorithm-
+// independent workload and preserving heterogeneous fidelity values.
 vector<SDpair> generate_stratified_requests(
     Graph &graph,
     int requests_cnt,
-    double purification_fraction = 0.40) {
+    double purification_fraction = 0.25,
+    double hotspot_fraction = 0.80,
+    int minimum_hops = 2,
+    int maximum_hops = 4,
+    int hotspot_candidate_limit = 1) {
     const int node_count = graph.get_num_nodes();
     const double threshold = graph.get_fidelity_threshold();
     const double A = graph.get_A(), B = graph.get_B();
@@ -477,8 +486,24 @@ vector<SDpair> generate_stratified_requests(
             pass_tao(left_fidelity), pass_tao(right_fidelity));
     };
 
-    vector<pair<double, SDpair>> common_candidates_by_fidelity;
-    vector<SDpair> purification_candidates;
+    struct CandidateProfile {
+        SDpair request;
+        Path path;
+        double base_fidelity;
+        bool common_feasible;
+    };
+    struct ScoredRequest {
+        SDpair request;
+        double base_fidelity;
+        int pressure;
+        bool crosses_hotspot;
+    };
+
+    minimum_hops = max(1, minimum_hops);
+    maximum_hops = max(minimum_hops, maximum_hops);
+    vector<CandidateProfile> candidate_profiles;
+    vector<int> common_transit_load(node_count, 0);
+    vector<int> all_transit_load(node_count, 0);
     map<int, array<int, 3>> diagnostics;
 
     for(int source = 0; source < node_count; ++source) {
@@ -486,7 +511,7 @@ vector<SDpair> generate_stratified_requests(
             ++destination) {
             Path path = shortest_path(source, destination);
             const int hops = (int)path.size() - 1;
-            if(hops < 1 || hops > 2) continue;
+            if(hops < minimum_hops || hops > maximum_hops) continue;
 
             vector<double> link_fidelity(hops);
             for(int link = 0; link < hops; ++link) {
@@ -500,10 +525,13 @@ vector<SDpair> generate_stratified_requests(
             diagnostics[hops][0]++;
 
             if(base_fidelity >= threshold) {
-                common_candidates_by_fidelity.push_back(
-                    {base_fidelity, {source, destination}});
-                common_candidates_by_fidelity.push_back(
-                    {base_fidelity, {destination, source}});
+                candidate_profiles.push_back({
+                    {source, destination}, path, base_fidelity, true});
+                for(int position = 1; position + 1 < (int)path.size();
+                    ++position) {
+                    common_transit_load[path[position]]++;
+                    all_transit_load[path[position]]++;
+                }
                 diagnostics[hops][1]++;
                 continue;
             }
@@ -518,38 +546,95 @@ vector<SDpair> generate_stratified_requests(
                 }
             }
             if(feasible_with_purification) {
-                purification_candidates.push_back({source, destination});
-                purification_candidates.push_back({destination, source});
+                candidate_profiles.push_back({
+                    {source, destination}, path, base_fidelity, false});
+                for(int position = 1; position + 1 < (int)path.size();
+                    ++position)
+                    all_transit_load[path[position]]++;
                 diagnostics[hops][2]++;
             }
         }
     }
 
-    // Use a topology-dependent median instead of a hand-tuned fidelity
-    // boundary.  This keeps both common strata populated when threshold or
-    // link-fidelity settings change.
+    // Select a small number of topology-derived bottlenecks.  Common-feasible
+    // traffic drives this ranking because WPFA-noPurify, FNPR, and FLTO can all
+    // serve that traffic.  Fall back to the full feasible pool when necessary.
+    const vector<int>& hotspot_load = *max_element(
+        common_transit_load.begin(), common_transit_load.end()) > 0
+        ? common_transit_load
+        : all_transit_load;
+    vector<int> node_order(node_count);
+    for(int node = 0; node < node_count; ++node) node_order[node] = node;
+    sort(node_order.begin(), node_order.end(), [&](int left, int right) {
+        if(hotspot_load[left] != hotspot_load[right])
+            return hotspot_load[left] > hotspot_load[right];
+        return left < right;
+    });
+    set<int> hotspot_nodes;
+    const int hotspot_node_limit = min(1, node_count);
+    for(int position = 0; position < hotspot_node_limit; ++position) {
+        const int node = node_order[position];
+        if(hotspot_load[node] <= 0) break;
+        hotspot_nodes.insert(node);
+    }
+
+    vector<ScoredRequest> common_candidates_by_fidelity;
+    vector<ScoredRequest> purification_candidates;
+    for(const CandidateProfile& profile : candidate_profiles) {
+        int pressure = 0;
+        bool crosses_hotspot = false;
+        for(int position = 1; position + 1 < (int)profile.path.size();
+            ++position) {
+            const int node = profile.path[position];
+            pressure = max(pressure, hotspot_load[node]);
+            crosses_hotspot = crosses_hotspot || hotspot_nodes.count(node);
+        }
+
+        auto add_orientation = [&](SDpair request) {
+            ScoredRequest candidate{
+                request, profile.base_fidelity, pressure, crosses_hotspot};
+            if(profile.common_feasible)
+                common_candidates_by_fidelity.push_back(candidate);
+            else
+                purification_candidates.push_back(candidate);
+        };
+        add_orientation(profile.request);
+        add_orientation({profile.request.second, profile.request.first});
+    }
+
+    // Keep the lower and upper fidelity tails.  The omitted middle candidates
+    // would make resource-aware and fidelity-aware choices nearly
+    // indistinguishable; the two tails create the intended quality/resource
+    // trade-off without relying on a hand-tuned absolute fidelity boundary.
     sort(
         common_candidates_by_fidelity.begin(),
         common_candidates_by_fidelity.end(),
-        [](const pair<double, SDpair>& left,
-           const pair<double, SDpair>& right) {
-            return left.first < right.first;
+        [](const ScoredRequest& left, const ScoredRequest& right) {
+            if(left.base_fidelity != right.base_fidelity)
+                return left.base_fidelity < right.base_fidelity;
+            if(left.pressure != right.pressure)
+                return left.pressure > right.pressure;
+            return left.request < right.request;
         });
-    vector<SDpair> marginal_common_candidates;
-    vector<SDpair> high_common_candidates;
+    vector<ScoredRequest> marginal_common_candidates;
+    vector<ScoredRequest> high_common_candidates;
     const int common_split =
         (int)common_candidates_by_fidelity.size() / 2;
-    for(int i = 0; i < (int)common_candidates_by_fidelity.size(); ++i) {
-        if(i < common_split)
-            marginal_common_candidates.push_back(
-                common_candidates_by_fidelity[i].second);
-        else
-            high_common_candidates.push_back(
-                common_candidates_by_fidelity[i].second);
+    const int fidelity_tail_size = common_candidates_by_fidelity.empty()
+        ? 0
+        : max(1, (int)ceil(common_candidates_by_fidelity.size() * 0.35));
+    for(int i = 0; i < fidelity_tail_size; ++i) {
+        marginal_common_candidates.push_back(
+            common_candidates_by_fidelity[i]);
+        high_common_candidates.push_back(
+            common_candidates_by_fidelity[
+                common_candidates_by_fidelity.size() - 1 - i]);
     }
 
     if(purification_fraction < 0.0) purification_fraction = 0.0;
     if(purification_fraction > 1.0) purification_fraction = 1.0;
+    if(hotspot_fraction < 0.0) hotspot_fraction = 0.0;
+    if(hotspot_fraction > 1.0) hotspot_fraction = 1.0;
     int purification_target = (int)lround(
         requests_cnt * purification_fraction);
     int common_target = requests_cnt - purification_target;
@@ -590,21 +675,73 @@ vector<SDpair> generate_stratified_requests(
 
     random_device random_source;
     default_random_engine generator(random_source());
-    uniform_int_distribution<int> repeat_distribution(3, 6);
-    auto append_repeated = [&] (
-        vector<SDpair> candidates,
+    uniform_int_distribution<int> repeat_distribution(2, 4);
+    auto append_pressure_mixed = [&] (
+        vector<ScoredRequest> candidates,
         int target,
+        double target_hotspot_fraction,
         vector<SDpair>& output) {
-        int added = 0;
-        while(added < target) {
-            shuffle(candidates.begin(), candidates.end(), generator);
-            for(const SDpair& request : candidates) {
-                int repeat = min(repeat_distribution(generator), target - added);
-                for(int copy = 0; copy < repeat; ++copy)
-                    output.push_back(request);
-                added += repeat;
-                if(added == target) break;
+        if(target <= 0) return;
+
+        vector<SDpair> hotspot_candidates;
+        vector<SDpair> background_candidates;
+        for(const ScoredRequest& candidate : candidates) {
+            if(candidate.crosses_hotspot)
+                hotspot_candidates.push_back(candidate.request);
+            else
+                background_candidates.push_back(candidate.request);
+        }
+
+        // Model a burst of a few elephant SD flows through the bottleneck.
+        // Repeating these flows before and after the path builder exhausts the
+        // hotspot gives the same request alternative congested/background
+        // paths, which is essential for exercising joint path/numerology
+        // selection rather than only admission control.
+        hotspot_candidate_limit = max(1, hotspot_candidate_limit);
+        if((int)hotspot_candidates.size() > hotspot_candidate_limit)
+            hotspot_candidates.resize(hotspot_candidate_limit);
+
+        int hotspot_target = (int)lround(
+            target * target_hotspot_fraction);
+        if(hotspot_candidates.empty()) hotspot_target = 0;
+        if(background_candidates.empty()) hotspot_target = target;
+        const int background_target = target - hotspot_target;
+
+        auto sample_repeated = [&](vector<SDpair> pool, int amount) {
+            vector<SDpair> sampled;
+            sampled.reserve(amount);
+            while((int)sampled.size() < amount) {
+                shuffle(pool.begin(), pool.end(), generator);
+                for(const SDpair& request : pool) {
+                    int repeat = min(
+                        repeat_distribution(generator),
+                        amount - (int)sampled.size());
+                    for(int copy = 0; copy < repeat; ++copy)
+                        sampled.push_back(request);
+                    if((int)sampled.size() == amount) break;
+                }
             }
+            return sampled;
+        };
+
+        vector<SDpair> hotspot_requests =
+            sample_repeated(hotspot_candidates, hotspot_target);
+        vector<SDpair> background_requests =
+            sample_repeated(background_candidates, background_target);
+
+        int hotspot_position = 0;
+        int background_position = 0;
+        const double effective_hotspot_fraction = target > 0
+            ? (double)hotspot_target / target
+            : 0.0;
+        for(int prefix = 1; prefix <= target; ++prefix) {
+            const int desired_hotspot = (int)lround(
+                prefix * effective_hotspot_fraction);
+            if(hotspot_position < desired_hotspot)
+                output.push_back(hotspot_requests[hotspot_position++]);
+            else
+                output.push_back(
+                    background_requests[background_position++]);
         }
     };
 
@@ -614,16 +751,24 @@ vector<SDpair> generate_stratified_requests(
     marginal_common_requests.reserve(marginal_common_target);
     high_common_requests.reserve(high_common_target);
     purification_requests.reserve(purification_target);
-    append_repeated(
+    // Marginal requests include more resource-efficient background traffic,
+    // whereas high-quality and purification-needed requests apply stronger
+    // pressure to the hotspot.  This produces a controlled value/resource
+    // conflict instead of uniformly congesting every fidelity class.
+    const double marginal_hotspot_fraction = max(
+        0.0L, hotspot_fraction - 0.25L);
+    append_pressure_mixed(
         marginal_common_candidates,
         marginal_common_target,
+        marginal_hotspot_fraction,
         marginal_common_requests);
-    append_repeated(
+    append_pressure_mixed(
         high_common_candidates,
         high_common_target,
+        hotspot_fraction,
         high_common_requests);
-    append_repeated(
-        purification_candidates, purification_target,
+    append_pressure_mixed(
+        purification_candidates, purification_target, hotspot_fraction,
         purification_requests);
 
     // The request-count experiment consumes prefixes of this pool.  Mix in
@@ -670,21 +815,49 @@ vector<SDpair> generate_stratified_requests(
 
     cerr << "[request_mix] threshold=" << threshold
          << " T=" << T << " tao=" << tao
+         << " hops=" << minimum_hops << "--" << maximum_hops
          << " | selected common=" << common_target
          << " (marginal=" << marginal_common_target
          << ", high=" << high_common_target << ")"
          << " purification=" << purification_target << endl;
     if(!common_candidates_by_fidelity.empty()) {
         const double minimum_common_fidelity =
-            common_candidates_by_fidelity.front().first;
+            common_candidates_by_fidelity.front().base_fidelity;
         const double median_common_fidelity =
-            common_candidates_by_fidelity[common_split].first;
+            common_candidates_by_fidelity[common_split].base_fidelity;
         const double maximum_common_fidelity =
-            common_candidates_by_fidelity.back().first;
+            common_candidates_by_fidelity.back().base_fidelity;
         cerr << "  common fidelity range=" << minimum_common_fidelity
              << " ... " << median_common_fidelity
              << " ... " << maximum_common_fidelity << endl;
     }
+    cerr << "  hotspot nodes:";
+    for(int node : hotspot_nodes)
+        cerr << " v" << node << "(candidate_load=" << hotspot_load[node]
+             << ")";
+    cerr << " | hotspot fractions marginal/high="
+         << marginal_hotspot_fraction << "/" << hotspot_fraction << endl;
+
+    int hotspot_request_count = 0;
+    int peak_internal_node_load = 0;
+    vector<int> selected_internal_load(node_count, 0);
+    set<SDpair> unique_requests;
+    for(const SDpair& request : requests) {
+        unique_requests.insert(request);
+        Path path = shortest_path(request.first, request.second);
+        bool crosses_hotspot = false;
+        for(int position = 1; position + 1 < (int)path.size(); ++position) {
+            const int node = path[position];
+            crosses_hotspot = crosses_hotspot || hotspot_nodes.count(node);
+            peak_internal_node_load = max(
+                peak_internal_node_load, ++selected_internal_load[node]);
+        }
+        hotspot_request_count += crosses_hotspot;
+    }
+    cerr << "  selected hotspot requests=" << hotspot_request_count << "/"
+         << requests.size() << " | unique directed SD pairs="
+         << unique_requests.size() << " | peak internal-node demand="
+         << peak_internal_node_load << endl;
     for(const auto& [hops, count] : diagnostics) {
         cerr << "  hop=" << hops
              << " candidates=" << count[0]
@@ -723,7 +896,11 @@ int main(){
     // The default workload itself is stratified below.  hop_count is only the
     // requested distance in the dedicated hop_count experiment.
     default_setting["hop_count"]=2;
-    default_setting["purification_request_fraction"]=0.40;
+    default_setting["purification_request_fraction"]=0.25;
+    default_setting["request_hotspot_fraction"]=0.80;
+    default_setting["request_min_hops"]=2;
+    default_setting["request_max_hops"]=4;
+    default_setting["request_hotspot_candidate_limit"]=1;
     default_setting["delta_P"]=0.01;
     map<string, vector<double>> change_parameter;
     change_parameter["request_cnt"] = {80,100,120,140,160};
@@ -777,7 +954,11 @@ int main(){
         const int total_cnt = 200;  // pool must cover max(request_cnt)=160
         default_requests[r] = generate_stratified_requests(
             graph, total_cnt,
-            default_setting["purification_request_fraction"]);
+            default_setting["purification_request_fraction"],
+            default_setting["request_hotspot_fraction"],
+            (int)default_setting["request_min_hops"],
+            (int)default_setting["request_max_hops"],
+            (int)default_setting["request_hotspot_candidate_limit"]);
 
         {
             map<int, int> hop_dist;
@@ -793,8 +974,10 @@ int main(){
             for (auto &[h, cnt] : hop_dist)
                 cerr << h << "hop=" << cnt << " ";
             cerr << endl
-                 << "  target purification-needed fraction="
-                 << default_setting["purification_request_fraction"] << endl
+                  << "  target purification-needed fraction="
+                 << default_setting["purification_request_fraction"]
+                 << " | target hotspot fraction="
+                 << default_setting["request_hotspot_fraction"] << endl
                  << "================================================"
                  << "\033[0m" << endl;
         }

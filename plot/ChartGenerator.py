@@ -151,31 +151,31 @@ class ChartGenerator:
 
     _Y_INTERVALS = {
         'fidelity_gain':{
-            'request_cnt': (30, 123, 10, 3), 'tao': (30, 60, 5, 2),
+            'request_cnt': (30, 125, 5, 8), 'tao': (20, 60, 5, 2),
             'time_limit': (30, 55, 5, 1), 'avg_memory': (0, 30, 5, 2),
             'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 85, 5, 4),
-            'swap_prob': (30, 70, 5, 2), 'entangle_time': "auto",
+            'swap_prob': (20, 55, 5, 1), 'entangle_time': "auto",
             'hop_count':(10,90,5,3),
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'succ_request_cnt':{
-            'request_cnt': (40, 160, 5, 8), 'tao': (40, 55, 5, 1),
+            'request_cnt': (40, 140, 5, 4), 'tao': (40, 55, 5, 1),
             'time_limit': (45, 60, 5, 1), 'avg_memory': (0, 45, 5, 3),
             'min_fidelity': (65, 95, 5, 1), 'fidelity_threshold': (15, 40, 5, 1),
-            'swap_prob': (35, 72, 5, 1), 'hop_count':(20,105,5,7),
+            'swap_prob': (25, 70, 5, 1), 'hop_count':(20,105,5,7),
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'pure_fidelity':{
             'request_cnt': (50, 80, 5, 2), 'tao': (50, 70, 1, 5),
             'time_limit': (45, 70, 1, 5), 'avg_memory': (20, 40, 1, 5),
-            'min_fidelity': (50, 80, 1, 5), 'fidelity_threshold': (0, 70, 5, 2),
+            'min_fidelity': (50, 80, 1, 5), 'fidelity_threshold': (50, 70, 1, 5),
             'swap_prob': "auto", 'entangle_time': "auto", 'entangle_prob': "auto",
             'hop_count': "auto",
             'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'actual_req_cnt':{
-            'request_cnt': (40,160,10,4), 'tao': (45,65,5,1),
+            'request_cnt': (40,165,5,8), 'tao': (45,65,5,1),
             'time_limit': (50,75,5,1), 'avg_memory': (10,80,5,2),
             'min_fidelity': "auto", 'fidelity_threshold': (25,85,5,1),
             'swap_prob': (50,75,5,1), 'hop_count': "auto",
@@ -198,10 +198,12 @@ class ChartGenerator:
 
     _ONLY_WERNER_X = {"Zmin", "time_eta", "bucket_eps"}
 
-    # 欄位順序與 src/main.cpp 寫入 .ans 的順序完全相同：
-    # ZFA_UB, ZFA, ZFA2, MyAlgo1 (FNPR), MyAlgo3 (FLTO), EFiRAP.
-    _ALGO_NAMES = ["UB", "ZFA", "ZFA2", "FNPR", "FLTO", "EFiRAP"]
+    # 欄位順序與 main.cpp 相同：
+    # ZFA_UB=WernerAlgo3, ZFA=WernerAlgo, ZFA2=WernerAlgo2,
+    # MyAlgo1=MyAlgo1, MyAlgo3=MyAlgo3, EFiRAP=EFiRAP
+    _ALGO_NAMES = ["UB", "WPFA-noPurify", "WPFA", "FNPR", "FLTO", "EFiRAP"]
 
+    # 保持資料欄位順序，並包含第 6 個演算法 EFiRAP。
     _DRAW_ORDER = [0, 1, 2, 3, 4, 5]
 
     # 保持原本各欄位使用的 marker 與顏色。
@@ -448,9 +450,9 @@ if __name__ == "__main__":
 
     Xlabels = [
         "request_cnt", "time_limit", "tao",
-        "avg_memory", "fidelity_threshold", "hop_count", "swap_prob",
+        "avg_memory", "fidelity_threshold", "min_fidelity","hop_count",
     ]
-    Ylabels = ["fidelity_gain", "succ_request_cnt", "actual_req_cnt"]
+    Ylabels = ["fidelity_gain", "succ_request_cnt", "pure_fidelity", "actual_req_cnt"]
     PathNames = ["Greedy"]
 
     OVERRIDE_LABEL_EVERY = None
