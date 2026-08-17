@@ -254,26 +254,20 @@ map<EFiRAP::ResourceKey, int> EFiRAP::calculate_memory_usage(
     const vector<int>& purify_rounds) const {
     map<ResourceKey, int> usage;
 
-    // A simulation horizon is one long timeslot for EFiRAP. Once a physical
-    // memory cell is used in this long timeslot, that same cell stays IDLE and
-    // cannot be assigned to another connection until the horizon ends. Keep
-    // the Shape ranges unchanged because their endpoints describe the actual
-    // swapping times and are also used by the fidelity/decoherence model.
-    const int last_time = time_limit - 1;
-
-    // Every range represents one primary-pair memory cell. It is active over
-    // the Shape range and then idle for the rest of the long timeslot.
+    // A primary Bell-pair cell is released when its Shape lifetime ends, so it
+    // can be reused by a later connection in the same simulation horizon.
     for(const auto& node_ranges : shape_vector) {
         int node = node_ranges.first;
         for(const auto& range : node_ranges.second) {
-            for(int t = range.first; t <= last_time; ++t) {
+            for(int t = range.first; t <= range.second; ++t) {
                 usage[{node, t}]++;
             }
         }
     }
 
     // EFiRAP generates all sacrificial pairs simultaneously. A round therefore
-    // adds one cell at both endpoints. Those cells also stay idle after use.
+    // adds one cell at both endpoints at the link's generation time. These
+    // cells are consumed by purification and released after that timeslot.
     for(size_t link = 0; link + 1 < shape_vector.size(); ++link) {
         int rounds = link < purify_rounds.size() ? purify_rounds[link] : 0;
         if(rounds <= 0) continue;
@@ -281,10 +275,8 @@ map<EFiRAP::ResourceKey, int> EFiRAP::calculate_memory_usage(
         int generation_time = shape_vector[link].second.back().first;
         int left_node = shape_vector[link].first;
         int right_node = shape_vector[link + 1].first;
-        for(int t = generation_time; t <= last_time; ++t) {
-            usage[{left_node, t}] += rounds;
-            usage[{right_node, t}] += rounds;
-        }
+        usage[{left_node, generation_time}] += rounds;
+        usage[{right_node, generation_time}] += rounds;
     }
     return usage;
 }
@@ -526,31 +518,20 @@ void EFiRAP::reserve_candidate(const Candidate& candidate) {
     // reserve_shape accounts for the primary Bell pairs and records metrics.
     graph.reserve_shape(shape, true);
 
-    // reserve_shape only reserves the active primary-pair intervals. Reserve
-    // the remaining entries in memory_usage: primary cells' IDLE tails plus
-    // the active/IDLE lifetime of every sacrificial purification cell.
-    map<ResourceKey, int> primary_active_usage;
-    for(const auto& node_ranges : candidate.shape_vector) {
-        int node = node_ranges.first;
-        for(const auto& range : node_ranges.second) {
-            for(int t = range.first; t <= range.second; ++t) {
-                primary_active_usage[{node, t}]++;
-            }
-        }
-    }
+    // Add the simultaneous sacrificial-pair memory omitted by reserve_shape.
+    // It is reserved only while purification runs and is reusable afterward.
+    for(size_t link = 0; link + 1 < candidate.shape_vector.size(); ++link) {
+        int rounds = link < candidate.purify_rounds.size()
+                         ? candidate.purify_rounds[link]
+                         : 0;
+        if(rounds <= 0) continue;
 
-    for(const auto& entry : candidate.memory_usage) {
-        int already_reserved = 0;
-        auto active_it = primary_active_usage.find(entry.first);
-        if(active_it != primary_active_usage.end()) {
-            already_reserved = active_it->second;
-        }
-
-        int remaining = entry.second - already_reserved;
-        if(remaining > 0) {
-            graph.reserve_node_memory_at(
-                entry.first.first, entry.first.second, remaining);
-        }
+        int generation_time =
+            candidate.shape_vector[link].second.back().first;
+        int left_node = candidate.shape_vector[link].first;
+        int right_node = candidate.shape_vector[link + 1].first;
+        graph.reserve_node_memory_at(left_node, generation_time, rounds);
+        graph.reserve_node_memory_at(right_node, generation_time, rounds);
     }
 }
 

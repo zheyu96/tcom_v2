@@ -37,8 +37,8 @@ using namespace std;
  *     project's Werner/decoherence model, not the paper's bit-flip model.
  *   - There is no independent link-capacity constraint. One primary Bell
  *     pair and every sacrificial pair consume memory at both link endpoints.
- *   - The whole simulation horizon is one long timeslot. After a memory cell
- *     is used, it remains IDLE (unavailable) through time_limit - 1.
+ *   - Memory cells are occupied only for their Shape/purification lifetime
+ *     and are available to later connections after that lifetime ends.
  *   - EPS is solved as the integer form of Problem (12) with Gurobi. This is
  *     at least as accurate as the paper's LP/enumeration PTAS for throughput.
  */
