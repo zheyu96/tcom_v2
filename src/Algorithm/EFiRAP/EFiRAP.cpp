@@ -17,6 +17,17 @@ namespace {
 
 constexpr double DIJKSTRA_EPS = 1e-12;
 constexpr double MARGINAL_TIE_EPS = 1e-10;
+constexpr int MAX_PURIFICATION_ROUNDS = 3;
+
+// Same purification memory profile as WPFA's Purify_in_vt. Row r stores the
+// total number of cells required at each reverse-time index for r rounds.
+constexpr int PURIFICATION_MEMORY_PROFILE
+    [MAX_PURIFICATION_ROUNDS + 1][MAX_PURIFICATION_ROUNDS + 2] = {
+        {1, 1, 0, 0, 0},
+        {1, 2, 2, 0, 0},
+        {1, 2, 3, 2, 0},
+        {1, 2, 3, 3, 2},
+    };
 
 bool has_prefix(const Path& path, const Path& prefix) {
     if(path.size() < prefix.size()) return false;
@@ -205,24 +216,42 @@ int EFiRAP::assign_balanced_swap_times(
     int left,
     int right,
     int start_time,
+    const vector<int>& purify_rounds,
     vector<int>& swap_time) const {
-    if(right == left + 1) return start_time + 1;
+    if(right == left + 1) {
+        // WPFA needs rounds + 1 time units to prepare a purified elementary
+        // link. Its inclusive Shape lifetime is therefore rounds + 2 slots.
+        return start_time + purify_rounds[left] + 1;
+    }
 
     int middle = (left + right) / 2;
     int left_completion =
-        assign_balanced_swap_times(left, middle, start_time, swap_time);
+        assign_balanced_swap_times(
+            left, middle, start_time, purify_rounds, swap_time);
     int right_completion =
-        assign_balanced_swap_times(middle, right, start_time, swap_time);
+        assign_balanced_swap_times(
+            middle, right, start_time, purify_rounds, swap_time);
     swap_time[middle] = max(left_completion, right_completion);
     return swap_time[middle] + 1;
 }
 
-Shape_vector EFiRAP::build_balanced_shape(const Path& path, int start_time) {
+Shape_vector EFiRAP::build_balanced_shape(
+    const Path& path,
+    const vector<int>& purify_rounds,
+    int start_time) {
     if(path.size() < 2 || start_time < 0) return {};
+    if(purify_rounds.size() + 1 != path.size()) return {};
+    for(int rounds : purify_rounds) {
+        if(rounds < 0 || rounds > MAX_PURIFICATION_ROUNDS) return {};
+    }
 
     vector<int> swap_time(path.size(), -1);
     int completion = assign_balanced_swap_times(
-        0, (int)path.size() - 1, start_time, swap_time);
+        0,
+        (int)path.size() - 1,
+        start_time,
+        purify_rounds,
+        swap_time);
     if(completion >= graph.get_time_limit()) return {};
 
     Shape_vector shape_vector;
@@ -265,18 +294,26 @@ map<EFiRAP::ResourceKey, int> EFiRAP::calculate_memory_usage(
         }
     }
 
-    // EFiRAP generates all sacrificial pairs simultaneously. A round therefore
-    // adds one cell at both endpoints at the link's generation time. These
-    // cells are consumed by purification and released after that timeslot.
+    // Apply the same multi-timeslot purification profile as WPFA. The primary
+    // cell is already included by the Shape ranges above, so add only the
+    // profile's extra cells at both endpoints.
     for(size_t link = 0; link + 1 < shape_vector.size(); ++link) {
         int rounds = link < purify_rounds.size() ? purify_rounds[link] : 0;
         if(rounds <= 0) continue;
 
-        int generation_time = shape_vector[link].second.back().first;
+        int link_start = shape_vector[link].second.back().first;
         int left_node = shape_vector[link].first;
         int right_node = shape_vector[link + 1].first;
-        usage[{left_node, generation_time}] += rounds;
-        usage[{right_node, generation_time}] += rounds;
+        for(int offset = 0; offset <= rounds + 1; ++offset) {
+            int profile_index = rounds + 1 - offset;
+            int extra =
+                PURIFICATION_MEMORY_PROFILE[rounds][profile_index] - 1;
+            if(extra <= 0) continue;
+
+            int time = link_start + offset;
+            usage[{left_node, time}] += extra;
+            usage[{right_node, time}] += extra;
+        }
     }
     return usage;
 }
@@ -298,9 +335,6 @@ bool EFiRAP::fits_current_memory(const map<ResourceKey, int>& usage) {
 vector<EFiRAP::PurificationScheme> EFiRAP::prepare_path_schemes(
     const Path& path) {
     vector<PurificationScheme> result;
-    Shape_vector base_shape = build_balanced_shape(path, 0);
-    if(base_shape.empty()) return result;
-
     const int link_count = (int)path.size() - 1;
     queue<vector<int>> frontier;
     set<vector<int>> visited;
@@ -311,10 +345,14 @@ vector<EFiRAP::PurificationScheme> EFiRAP::prepare_path_schemes(
         frontier.pop();
         if(!visited.insert(rounds).second) continue;
 
-        map<ResourceKey, int> usage = calculate_memory_usage(base_shape, rounds);
+        Shape_vector shape_vector = build_balanced_shape(path, rounds, 0);
+        if(shape_vector.empty()) continue;
+
+        map<ResourceKey, int> usage =
+            calculate_memory_usage(shape_vector, rounds);
         if(!fits_initial_memory(usage)) continue;
 
-        double fidelity = evaluate_fidelity(base_shape, rounds);
+        double fidelity = evaluate_fidelity(shape_vector, rounds);
         if(fidelity >= graph.get_fidelity_threshold()) {
             result.push_back({rounds, fidelity});
             continue;
@@ -323,13 +361,18 @@ vector<EFiRAP::PurificationScheme> EFiRAP::prepare_path_schemes(
         double best_gain = 0.0;
         vector<pair<vector<int>, double>> next_states;
         for(int link = 0; link < link_count; ++link) {
+            if(rounds[link] >= MAX_PURIFICATION_ROUNDS) continue;
+
             vector<int> next = rounds;
             next[link]++;
+            Shape_vector next_shape = build_balanced_shape(path, next, 0);
+            if(next_shape.empty()) continue;
+
             map<ResourceKey, int> next_usage =
-                calculate_memory_usage(base_shape, next);
+                calculate_memory_usage(next_shape, next);
             if(!fits_initial_memory(next_usage)) continue;
 
-            double next_fidelity = evaluate_fidelity(base_shape, next);
+            double next_fidelity = evaluate_fidelity(next_shape, next);
             double gain = next_fidelity - fidelity;
             if(gain > best_gain) best_gain = gain;
             next_states.push_back({next, gain});
@@ -375,7 +418,8 @@ void EFiRAP::prepare_candidates() {
             for(const PurificationScheme& scheme : schemes) {
                 for(int start_time = 0; start_time < graph.get_time_limit(); ++start_time) {
                     Shape_vector shape_vector =
-                        build_balanced_shape(path, start_time);
+                        build_balanced_shape(
+                            path, scheme.rounds, start_time);
                     if(shape_vector.empty()) break;
 
                     map<ResourceKey, int> usage =
@@ -518,20 +562,29 @@ void EFiRAP::reserve_candidate(const Candidate& candidate) {
     // reserve_shape accounts for the primary Bell pairs and records metrics.
     graph.reserve_shape(shape, true);
 
-    // Add the simultaneous sacrificial-pair memory omitted by reserve_shape.
-    // It is reserved only while purification runs and is reusable afterward.
-    for(size_t link = 0; link + 1 < candidate.shape_vector.size(); ++link) {
-        int rounds = link < candidate.purify_rounds.size()
-                         ? candidate.purify_rounds[link]
-                         : 0;
-        if(rounds <= 0) continue;
+    // Reserve exactly the purification extras included in the EPS memory
+    // constraints. Subtract the primary cells already handled by reserve_shape
+    // so optimization and execution cannot drift apart.
+    map<ResourceKey, int> primary_usage;
+    for(const auto& node_ranges : candidate.shape_vector) {
+        int node = node_ranges.first;
+        for(const auto& range : node_ranges.second) {
+            for(int time = range.first; time <= range.second; ++time) {
+                primary_usage[{node, time}]++;
+            }
+        }
+    }
 
-        int generation_time =
-            candidate.shape_vector[link].second.back().first;
-        int left_node = candidate.shape_vector[link].first;
-        int right_node = candidate.shape_vector[link + 1].first;
-        graph.reserve_node_memory_at(left_node, generation_time, rounds);
-        graph.reserve_node_memory_at(right_node, generation_time, rounds);
+    for(const auto& entry : candidate.memory_usage) {
+        int primary = 0;
+        auto primary_it = primary_usage.find(entry.first);
+        if(primary_it != primary_usage.end()) primary = primary_it->second;
+
+        int extra = entry.second - primary;
+        if(extra > 0) {
+            graph.reserve_node_memory_at(
+                entry.first.first, entry.first.second, extra);
+        }
     }
 }
 

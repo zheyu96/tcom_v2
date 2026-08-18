@@ -37,8 +37,8 @@ using namespace std;
  *     project's Werner/decoherence model, not the paper's bit-flip model.
  *   - There is no independent link-capacity constraint. One primary Bell
  *     pair and every sacrificial pair consume memory at both link endpoints.
- *   - Memory cells are occupied only for their Shape/purification lifetime
- *     and are available to later connections after that lifetime ends.
+ *   - Purification uses the same per-round duration and per-timeslot memory
+ *     profile as WPFA. Memory is reusable after the operation lifetime ends.
  *   - EPS is solved as the integer form of Problem (12) with Gurobi. This is
  *     at least as accurate as the paper's LP/enumeration PTAS for throughput.
  */
@@ -101,8 +101,12 @@ private:
     int assign_balanced_swap_times(int left,
                                    int right,
                                    int start_time,
+                                   const vector<int>& purify_rounds,
                                    vector<int>& swap_time) const;
-    Shape_vector build_balanced_shape(const Path& path, int start_time);
+    Shape_vector build_balanced_shape(
+        const Path& path,
+        const vector<int>& purify_rounds,
+        int start_time);
 
     vector<PurificationScheme> prepare_path_schemes(const Path& path);
     double evaluate_fidelity(const Shape_vector& shape_vector,
