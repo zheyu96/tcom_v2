@@ -39,8 +39,8 @@ using namespace std;
  *     pair and every sacrificial pair consume memory at both link endpoints.
  *   - Purification uses the same per-round duration and per-timeslot memory
  *     profile as WPFA. Memory is reusable after the operation lifetime ends.
- *   - EPS is solved as the integer form of Problem (12) with Gurobi. This is
- *     at least as accurate as the paper's LP/enumeration PTAS for throughput.
+ *   - EPS follows Algorithm 2 in the paper: solve the LP relaxation, enumerate
+ *     bounded integer lower-bound guesses, re-solve the LP, and floor it.
  */
 class EFiRAP : public AlgorithmBase {
 public:
@@ -48,8 +48,9 @@ public:
            const vector<SDpair>& requests,
            const map<SDpair, vector<Path>>& paths,
            int k_paths = 10,
-           double mip_gap = 0.0,
-           double solver_time_limit_seconds = 0.0);
+           double approximation_epsilon = 0.5,
+           double solver_time_limit_seconds = 0.0,
+           long long enumeration_state_limit = 100000);
 
     void run() override;
 
@@ -81,8 +82,11 @@ private:
     };
 
     int k_paths;
-    double mip_gap;
+    double approximation_epsilon;
     double solver_time_limit_seconds;
+    // Algorithm 2 is exponential. The paper explicitly permits trying only a
+    // subset of guesses in large instances. Zero requests exhaustive search.
+    long long enumeration_state_limit;
     long long initial_memory_capacity = 0;
 
     vector<RequestGroup> request_groups;
@@ -117,7 +121,7 @@ private:
     bool fits_initial_memory(const map<ResourceKey, int>& usage);
     bool fits_current_memory(const map<ResourceKey, int>& usage);
 
-    vector<vector<int>> solve_eps_with_gurobi();
+    vector<vector<int>> solve_eps_ptas_with_gurobi();
     void reserve_candidate(const Candidate& candidate);
 };
 

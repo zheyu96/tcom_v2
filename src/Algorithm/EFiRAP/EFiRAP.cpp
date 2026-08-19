@@ -43,20 +43,27 @@ EFiRAP::EFiRAP(const Graph& graph,
                const vector<SDpair>& requests,
                const map<SDpair, vector<Path>>& paths,
                int k_paths,
-               double mip_gap,
-               double solver_time_limit_seconds)
+               double approximation_epsilon,
+               double solver_time_limit_seconds,
+               long long enumeration_state_limit)
     : AlgorithmBase(graph, requests, paths),
       k_paths(k_paths),
-      mip_gap(mip_gap),
-      solver_time_limit_seconds(solver_time_limit_seconds) {
+      approximation_epsilon(approximation_epsilon),
+      solver_time_limit_seconds(solver_time_limit_seconds),
+      enumeration_state_limit(enumeration_state_limit) {
     if(k_paths <= 0) {
         throw invalid_argument("EFiRAP requires k_paths > 0");
     }
-    if(mip_gap < 0.0 || mip_gap >= 1.0) {
-        throw invalid_argument("EFiRAP requires 0 <= mip_gap < 1");
+    if(approximation_epsilon <= 0.0 || approximation_epsilon >= 1.0) {
+        throw invalid_argument(
+            "EFiRAP requires 0 < approximation_epsilon < 1");
     }
     if(solver_time_limit_seconds < 0.0) {
         throw invalid_argument("EFiRAP requires a non-negative solver time limit");
+    }
+    if(enumeration_state_limit < 0) {
+        throw invalid_argument(
+            "EFiRAP requires a non-negative enumeration state limit");
     }
 
     algorithm_name = "EFiRAP";
@@ -443,7 +450,7 @@ void EFiRAP::prepare_candidates() {
     }
 }
 
-vector<vector<int>> EFiRAP::solve_eps_with_gurobi() {
+vector<vector<int>> EFiRAP::solve_eps_ptas_with_gurobi() {
 #if EFIRAP_HAS_GUROBI
     try {
         GRBEnv environment(true);
@@ -451,72 +458,298 @@ vector<vector<int>> EFiRAP::solve_eps_with_gurobi() {
         environment.start();
 
         GRBModel model(environment);
-        model.set(GRB_StringAttr_ModelName, "EFiRAP_EPS");
-        model.set(GRB_DoubleParam_MIPGap, mip_gap);
+        model.set(GRB_StringAttr_ModelName, "EFiRAP_EPS_PTAS_LP");
         if(solver_time_limit_seconds > 0.0) {
             model.set(GRB_DoubleParam_TimeLimit, solver_time_limit_seconds);
         }
 
-        vector<vector<GRBVar>> variables(candidates.size());
-        GRBLinExpr objective = 0.0;
+        struct FlatCandidate {
+            size_t group;
+            size_t candidate;
+        };
+
+        const int node_count = graph.get_num_nodes();
+        const int time_count = graph.get_time_limit();
+        const int resource_count = node_count * time_count;
+
+        vector<FlatCandidate> flat_candidates;
+        vector<vector<int>> flat_indices(candidates.size());
         for(size_t group = 0; group < candidates.size(); ++group) {
-            variables[group].reserve(candidates[group].size());
-            for(size_t candidate = 0; candidate < candidates[group].size(); ++candidate) {
-                string name = "x_" + to_string(group) + "_" +
-                              to_string(candidate);
-                GRBVar variable = model.addVar(
-                    0.0,
-                    request_groups[group].demand,
-                    1.0,
-                    GRB_INTEGER,
-                    name);
-                variables[group].push_back(variable);
-                objective += variable;
+            flat_indices[group].resize(candidates[group].size(), -1);
+            for(size_t candidate = 0;
+                candidate < candidates[group].size();
+                ++candidate) {
+                flat_indices[group][candidate] =
+                    (int)flat_candidates.size();
+                flat_candidates.push_back({group, candidate});
             }
+        }
+
+        const int variable_count = (int)flat_candidates.size();
+        vector<vector<pair<int, int>>> usage_by_variable(variable_count);
+        vector<vector<pair<int, int>>> variables_by_resource(resource_count);
+        vector<int> resource_capacity(resource_count, 0);
+        for(int node = 0; node < node_count; ++node) {
+            for(int time = 0; time < time_count; ++time) {
+                resource_capacity[node * time_count + time] =
+                    graph.get_node_memory_at(node, time);
+            }
+        }
+
+        for(int flat = 0; flat < variable_count; ++flat) {
+            const FlatCandidate& index = flat_candidates[flat];
+            for(const auto& entry :
+                candidates[index.group][index.candidate].memory_usage) {
+                int resource = entry.first.first * time_count +
+                               entry.first.second;
+                usage_by_variable[flat].push_back(
+                    {resource, entry.second});
+                variables_by_resource[resource].push_back(
+                    {flat, entry.second});
+            }
+        }
+
+        vector<int> variable_upper_bound(variable_count, 0);
+        for(int flat = 0; flat < variable_count; ++flat) {
+            const FlatCandidate& index = flat_candidates[flat];
+            int upper = request_groups[index.group].demand;
+            for(const auto& entry : usage_by_variable[flat]) {
+                if(entry.second > 0) {
+                    upper = min(
+                        upper,
+                        resource_capacity[entry.first] / entry.second);
+                }
+            }
+            variable_upper_bound[flat] = upper;
+        }
+
+        vector<GRBVar> variables;
+        variables.reserve(variable_count);
+        GRBLinExpr objective = 0.0;
+        for(int flat = 0; flat < variable_count; ++flat) {
+            const FlatCandidate& index = flat_candidates[flat];
+            string name = "x_" + to_string(index.group) + "_" +
+                          to_string(index.candidate);
+            variables.push_back(model.addVar(
+                0.0,
+                variable_upper_bound[flat],
+                1.0,
+                GRB_CONTINUOUS,
+                name));
+            objective += variables.back();
         }
         model.setObjective(objective, GRB_MAXIMIZE);
 
-        // Each SD pair cannot receive more connections than requested.
+        int constraint_count = 0;
+        // Simulator adaptation: each SD pair cannot receive more connections
+        // than requested. Count these constraints in Algorithm 2's m.
         for(size_t group = 0; group < candidates.size(); ++group) {
+            if(candidates[group].empty()) continue;
             GRBLinExpr admitted = 0.0;
-            for(GRBVar& variable : variables[group]) admitted += variable;
+            for(size_t candidate = 0;
+                candidate < candidates[group].size();
+                ++candidate) {
+                admitted += variables[flat_indices[group][candidate]];
+            }
             model.addConstr(
                 admitted <= request_groups[group].demand,
                 "demand_" + to_string(group));
+            constraint_count++;
         }
 
         // Adapted Problem (12b): per-node, per-time quantum memory.
-        for(int node = 0; node < graph.get_num_nodes(); ++node) {
-            for(int time = 0; time < graph.get_time_limit(); ++time) {
-                GRBLinExpr consumed = 0.0;
-                for(size_t group = 0; group < candidates.size(); ++group) {
-                    for(size_t candidate = 0;
-                        candidate < candidates[group].size();
-                        ++candidate) {
-                        auto it = candidates[group][candidate].memory_usage.find(
-                            {node, time});
-                        if(it != candidates[group][candidate].memory_usage.end()) {
-                            consumed += it->second * variables[group][candidate];
-                        }
-                    }
-                }
-                model.addConstr(
-                    consumed <= graph.get_node_memory_at(node, time),
-                    "memory_" + to_string(node) + "_" + to_string(time));
+        for(int resource = 0; resource < resource_count; ++resource) {
+            if(variables_by_resource[resource].empty()) continue;
+
+            GRBLinExpr consumed = 0.0;
+            for(const auto& entry : variables_by_resource[resource]) {
+                consumed += entry.second * variables[entry.first];
             }
+            int node = resource / time_count;
+            int time = resource % time_count;
+            model.addConstr(
+                consumed <= resource_capacity[resource],
+                "memory_" + to_string(node) + "_" + to_string(time));
+            constraint_count++;
         }
 
+        // Algorithm 2, Lines 1-2: solve the continuous LP relaxation.
         model.optimize();
-        int solution_count = model.get(GRB_IntAttr_SolCount);
-        if(solution_count <= 0) {
-            throw runtime_error("Gurobi found no feasible EFiRAP EPS solution");
+        int status = model.get(GRB_IntAttr_Status);
+        if(status != GRB_OPTIMAL) {
+            throw runtime_error(
+                "EFiRAP EPS LP relaxation was not solved to optimality; "
+                "Gurobi status " + to_string(status));
         }
 
-        int status = model.get(GRB_IntAttr_Status);
-        if(status != GRB_OPTIMAL && status != GRB_TIME_LIMIT &&
-           status != GRB_SUBOPTIMAL && status != GRB_INTERRUPTED) {
-            throw runtime_error(
-                "Gurobi stopped with status " + to_string(status));
+        const double lp_objective = model.get(GRB_DoubleAttr_ObjVal);
+        vector<double> initial_lp(variable_count, 0.0);
+        vector<int> best_flat(variable_count, 0);
+        int best_objective = 0;
+        for(int flat = 0; flat < variable_count; ++flat) {
+            initial_lp[flat] = variables[flat].get(GRB_DoubleAttr_X);
+            best_flat[flat] = max(
+                0,
+                min(variable_upper_bound[flat],
+                    (int)floor(initial_lp[flat] + 1e-7)));
+            best_objective += best_flat[flat];
+        }
+        const int initial_floor_objective = best_objective;
+
+        // Algorithm 2, Line 3. The ceiling is the form used in the theorem's
+        // proof; floor(z_hat) also bounds the number of admitted requests.
+        double threshold_value =
+            constraint_count * (1.0 - approximation_epsilon) /
+            approximation_epsilon;
+        int lp_floor = max(0, (int)floor(lp_objective + 1e-7));
+        int approximation_threshold = lp_floor;
+        if(threshold_value < lp_floor) {
+            approximation_threshold =
+                (int)ceil(max(0.0, threshold_value) - 1e-12);
+        }
+        int enumeration_target = min(lp_floor, approximation_threshold);
+
+        vector<int> variable_order(variable_count, 0);
+        for(int flat = 0; flat < variable_count; ++flat) {
+            variable_order[flat] = flat;
+        }
+        sort(variable_order.begin(), variable_order.end(),
+             [&](int left, int right) {
+                 if(fabs(initial_lp[left] - initial_lp[right]) > 1e-12) {
+                     return initial_lp[left] > initial_lp[right];
+                 }
+                 int left_usage = 0;
+                 int right_usage = 0;
+                 for(const auto& entry : usage_by_variable[left]) {
+                     left_usage += entry.second;
+                 }
+                 for(const auto& entry : usage_by_variable[right]) {
+                     right_usage += entry.second;
+                 }
+                 if(left_usage != right_usage) {
+                     return left_usage < right_usage;
+                 }
+                 return left < right;
+             });
+
+        vector<long long> suffix_upper(variable_count + 1, 0);
+        for(int position = variable_count - 1; position >= 0; --position) {
+            suffix_upper[position] = min<long long>(
+                requests.size(),
+                suffix_upper[position + 1] +
+                    variable_upper_bound[variable_order[position]]);
+        }
+
+        long long enumeration_states = 0;
+        long long lp_subproblems = 0;
+        bool enumeration_truncated = false;
+        vector<int> seed(variable_count, 0);
+        vector<int> used_by_group(candidates.size(), 0);
+        vector<int> used_by_resource(resource_count, 0);
+
+        auto solve_seed_lp = [&]() {
+            for(int flat = 0; flat < variable_count; ++flat) {
+                variables[flat].set(GRB_DoubleAttr_LB, seed[flat]);
+            }
+            model.optimize();
+            lp_subproblems++;
+
+            int seed_status = model.get(GRB_IntAttr_Status);
+            if(seed_status == GRB_INFEASIBLE ||
+               seed_status == GRB_INF_OR_UNBD) {
+                return false;
+            }
+            if(seed_status != GRB_OPTIMAL) {
+                throw runtime_error(
+                    "EFiRAP EPS constrained LP was not solved to optimality; "
+                    "Gurobi status " + to_string(seed_status));
+            }
+
+            vector<int> rounded(variable_count, 0);
+            int rounded_objective = 0;
+            for(int flat = 0; flat < variable_count; ++flat) {
+                int value = (int)floor(
+                    variables[flat].get(GRB_DoubleAttr_X) + 1e-7);
+                value = max(seed[flat], value);
+                value = min(variable_upper_bound[flat], value);
+                rounded[flat] = value;
+                rounded_objective += value;
+            }
+            if(rounded_objective > best_objective) {
+                best_objective = rounded_objective;
+                best_flat.swap(rounded);
+            }
+            return true;
+        };
+
+        // Algorithm 2, Lines 5-9, with the paper's Section III-E pruning:
+        // reject resource-infeasible guesses before solving their LP and move
+        // to t+1 after the first feasible guess for the current t.
+        for(int target = initial_floor_objective + 1;
+            target <= enumeration_target && !enumeration_truncated;
+            ++target) {
+            fill(seed.begin(), seed.end(), 0);
+            fill(used_by_group.begin(), used_by_group.end(), 0);
+            fill(used_by_resource.begin(), used_by_resource.end(), 0);
+
+            function<bool(int, int)> enumerate_guess =
+                [&](int position, int remaining) -> bool {
+                enumeration_states++;
+                if(enumeration_state_limit > 0 &&
+                   enumeration_states > enumeration_state_limit) {
+                    enumeration_truncated = true;
+                    return false;
+                }
+                if(remaining == 0) return solve_seed_lp();
+                if(position >= variable_count) return false;
+                if(suffix_upper[position] < remaining) return false;
+
+                int flat = variable_order[position];
+                size_t group = flat_candidates[flat].group;
+                int maximum = min(
+                    remaining,
+                    variable_upper_bound[flat]);
+                maximum = min(
+                    maximum,
+                    request_groups[group].demand - used_by_group[group]);
+                for(const auto& entry : usage_by_variable[flat]) {
+                    if(entry.second <= 0) continue;
+                    maximum = min(
+                        maximum,
+                        (resource_capacity[entry.first] -
+                         used_by_resource[entry.first]) /
+                            entry.second);
+                }
+
+                for(int value = maximum; value >= 0; --value) {
+                    seed[flat] = value;
+                    used_by_group[group] += value;
+                    for(const auto& entry : usage_by_variable[flat]) {
+                        used_by_resource[entry.first] +=
+                            value * entry.second;
+                    }
+
+                    bool found = enumerate_guess(
+                        position + 1, remaining - value);
+
+                    used_by_group[group] -= value;
+                    for(const auto& entry : usage_by_variable[flat]) {
+                        used_by_resource[entry.first] -=
+                            value * entry.second;
+                    }
+                    seed[flat] = 0;
+
+                    if(found || enumeration_truncated) return found;
+                }
+                return false;
+            };
+
+            bool found = enumerate_guess(0, target);
+            if(!found && !enumeration_truncated) {
+                // No feasible integer lower-bound guess of this cardinality;
+                // larger cardinalities cannot be feasible either.
+                break;
+            }
         }
 
         vector<vector<int>> allocation(candidates.size());
@@ -525,14 +758,33 @@ vector<vector<int>> EFiRAP::solve_eps_with_gurobi() {
             for(size_t candidate = 0;
                 candidate < candidates[group].size();
                 ++candidate) {
-                double value = variables[group][candidate].get(GRB_DoubleAttr_X);
                 allocation[group][candidate] =
-                    max(0, (int)llround(value));
+                    best_flat[flat_indices[group][candidate]];
             }
         }
 
-        res["efirap_eps_objective"] = model.get(GRB_DoubleAttr_ObjVal);
-        res["efirap_eps_bound"] = model.get(GRB_DoubleAttr_ObjBound);
+        res["efirap_eps_objective"] = best_objective;
+        res["efirap_eps_bound"] = lp_objective;
+        res["efirap_eps_epsilon"] = approximation_epsilon;
+        res["efirap_eps_constraint_count"] = constraint_count;
+        res["efirap_eps_floor_objective"] = initial_floor_objective;
+        res["efirap_eps_enumeration_target"] = enumeration_target;
+        res["efirap_eps_enumeration_states"] =
+            (double)enumeration_states;
+        res["efirap_eps_lp_subproblems"] = (double)lp_subproblems;
+        res["efirap_eps_truncated"] = enumeration_truncated ? 1.0 : 0.0;
+
+        cerr << "[" << algorithm_name << "] EPS Algorithm 2: epsilon="
+             << approximation_epsilon << " lp_bound=" << lp_objective
+             << " initial_floor=" << initial_floor_objective
+             << " admitted=" << best_objective
+             << " target=" << enumeration_target
+             << " states=" << enumeration_states
+             << " subproblems=" << lp_subproblems;
+        if(enumeration_truncated) {
+            cerr << " truncated_at=" << enumeration_state_limit;
+        }
+        cerr << endl;
         return allocation;
     } catch(const GRBException& error) {
         throw runtime_error(
@@ -541,7 +793,8 @@ vector<vector<int>> EFiRAP::solve_eps_with_gurobi() {
     }
 #else
     throw runtime_error(
-        "EFiRAP EPS requires Gurobi. Recompile EFiRAP.cpp with "
+        "EFiRAP EPS PTAS requires Gurobi as its LP solver. Recompile "
+        "EFiRAP.cpp with "
         "-DEFIRAP_USE_GUROBI, add Gurobi's include path, and link "
         "gurobi_c++ plus the installed Gurobi version library.");
 #endif
@@ -607,7 +860,7 @@ void EFiRAP::run() {
     res["efirap_candidate_cnt"] = candidate_count;
 
     if(candidate_count > 0 && !requests.empty()) {
-        vector<vector<int>> allocation = solve_eps_with_gurobi();
+        vector<vector<int>> allocation = solve_eps_ptas_with_gurobi();
         for(size_t group = 0; group < allocation.size(); ++group) {
             for(size_t candidate = 0;
                 candidate < allocation[group].size();
