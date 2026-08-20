@@ -53,6 +53,10 @@ if len(sys.argv) <= 2:
 
 filename = sys.argv[1]
 num_of_node = int(sys.argv[2])
+experiment_seed = int(sys.argv[3]) if len(sys.argv) >= 4 else None
+if experiment_seed is not None:
+    random.seed(experiment_seed)
+    numpy.random.seed(experiment_seed % (2 ** 32))
 # min_memory_cnt = int(sys.argv[3])
 # max_memory_cnt = int(sys.argv[4])
 # min_fidelity = float(sys.argv[5])
@@ -65,11 +69,17 @@ num_of_node = int(sys.argv[2])
 print("======== generating graph ========", file=sys.stderr)
 print("filename =", filename, file=sys.stderr)
 print("num_of_node =", num_of_node, file=sys.stderr)
+print("seed =", experiment_seed, file=sys.stderr)
 # print("min_fidelity =", min_fidelity, ", max_fidelity =", max_fidelity, file=sys.stderr)
 # print("min_memory_cnt =", min_memory_cnt, ", max_memory_cnt =", max_memory_cnt, file=sys.stderr)
 
+generation_attempt = 0
 while True:
-    G = nx.waxman_graph(num_of_node, beta=0.85, alpha=0.08, domain=(0, 0, 0.5, 1))
+    graph_seed = (experiment_seed + generation_attempt
+                  if experiment_seed is not None else None)
+    G = nx.waxman_graph(num_of_node, beta=0.85, alpha=0.08,
+                        domain=(0, 0, 0.5, 1), seed=graph_seed)
+    generation_attempt += 1
     # G = nx.waxman_graph(num_of_node, beta=0.85, alpha=10, domain=(0, 0, 0.5, 1))
     positions = nx.get_node_attributes(G, 'pos')
     add_edge = []

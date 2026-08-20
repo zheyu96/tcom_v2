@@ -3,6 +3,7 @@
 #include <sys/resource.h>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <new>
 #include <stdexcept>
 #include "Network/Graph/Graph.h"
@@ -386,11 +387,47 @@ vector<SDpair> generate_requests_purify_needed(Graph &graph, int requests_cnt, i
     return requests;
 }
 
-// Build the default workload from topology and physical feasibility, never
-// from an algorithm's output.  "common" requests already meet the threshold
-// without purification and are split into lower- and higher-fidelity strata.
-// "purification" requests miss the threshold without purification but meet it
-// after at most three pumping rounds per link.
+enum RequestStratum {
+    MARGINAL_COMMON = 0,
+    HIGH_COMMON = 1,
+    ONE_ROUND_PURIFICATION = 2,
+    TWO_ROUND_PURIFICATION = 3,
+    REQUEST_STRATUM_COUNT = 4
+};
+
+struct RequestGenerationConfig {
+    int minimum_hops = 2;
+    int maximum_hops = 4;
+    int hotspot_node_limit = 2;
+    int hotspot_candidate_limit = 8;
+    int minimum_repetitions = 1;
+    int maximum_repetitions = 3;
+    unsigned int random_seed = 20260820U;
+
+    // Rows: marginal, high, one-round purification, two-round purification.
+    // Columns: 2, 3, and 4 hops.  Row sums are 35%, 25%, 30%, and 10%;
+    // column sums are 30%, 60%, and 10%.  This cross mix follows the physical
+    // candidate pool: two-hop requests rarely need purification, while common
+    // four-hop requests rarely clear the 0.8 fidelity threshold.
+    array<array<double, 3>, REQUEST_STRATUM_COUNT> stratum_hop_fraction{{
+        {{0.15, 0.20, 0.00}},
+        {{0.15, 0.10, 0.00}},
+        {{0.00, 0.20, 0.10}},
+        {{0.00, 0.10, 0.00}}
+    }};
+
+    // Easy traffic is spread out, while marginal and purification traffic
+    // creates moderate pressure around topology-derived bottlenecks.
+    array<double, REQUEST_STRATUM_COUNT> hotspot_fraction{{
+        0.50, 0.30, 0.60, 0.60
+    }};
+};
+
+// Build a topology-derived stress workload without consulting any algorithm's
+// output.  The mix deliberately contains more three-hop and one-round
+// purification requests, where joint path/numerology/resource decisions have
+// room to differ.  This workload should be reported as a stress test rather
+// than as a replacement for a neutral uniformly sampled baseline.
 //
 // To exercise node-time packing decisions, a controlled fraction of every
 // stratum is sampled from SD pairs whose shortest paths traverse the busiest
@@ -401,17 +438,14 @@ vector<SDpair> generate_requests_purify_needed(Graph &graph, int requests_cnt, i
 vector<SDpair> generate_stratified_requests(
     Graph &graph,
     int requests_cnt,
-    double purification_fraction = 0.25,
-    double hotspot_fraction = 0.65,
-    int minimum_hops = 2,
-    int maximum_hops = 4,
-    int hotspot_candidate_limit = 3) {
+    RequestGenerationConfig config = RequestGenerationConfig()) {
     const int node_count = graph.get_num_nodes();
     const double threshold = graph.get_fidelity_threshold();
     const double A = graph.get_A(), B = graph.get_B();
     const double n_param = graph.get_n();
     const double T = graph.get_T(), tao = graph.get_tao();
     const int max_purification_rounds = 3;
+    const array<int, 3> target_hops{{2, 3, 4}};
 
     auto shortest_path = [&](int source, int destination) -> Path {
         vector<int> parent(node_count, -1);
@@ -493,28 +527,33 @@ vector<SDpair> generate_stratified_requests(
         Path path;
         vector<int> feasible_two_hop_intermediates;
         double base_fidelity;
-        bool common_feasible;
+        int minimum_purification_rounds;
+        int hops;
     };
     struct ScoredRequest {
         SDpair request;
         double base_fidelity;
         int pressure;
         bool crosses_hotspot;
+        int minimum_purification_rounds;
+        int hops;
     };
 
-    minimum_hops = max(1, minimum_hops);
-    maximum_hops = max(minimum_hops, maximum_hops);
+    config.minimum_hops = max(1, config.minimum_hops);
+    config.maximum_hops = max(config.minimum_hops, config.maximum_hops);
     vector<CandidateProfile> candidate_profiles;
     vector<int> common_transit_load(node_count, 0);
     vector<int> all_transit_load(node_count, 0);
-    map<int, array<int, 3>> diagnostics;
+    // total, common, one-round, two-round, excluded-three-round
+    map<int, array<int, 5>> diagnostics;
 
     for(int source = 0; source < node_count; ++source) {
         for(int destination = source + 1; destination < node_count;
             ++destination) {
             Path path = shortest_path(source, destination);
             const int hops = (int)path.size() - 1;
-            if(hops < minimum_hops || hops > maximum_hops) continue;
+            if(hops < config.minimum_hops || hops > config.maximum_hops)
+                continue;
 
             vector<double> link_fidelity(hops);
             for(int link = 0; link < hops; ++link) {
@@ -534,7 +573,7 @@ vector<SDpair> generate_stratified_requests(
             vector<int> feasible_two_hop_intermediates;
             Path best_common_path;
             double best_common_fidelity = -1.0;
-            if(minimum_hops <= 2 && maximum_hops >= 2) {
+            if(config.minimum_hops <= 2 && config.maximum_hops >= 2) {
                 for(int intermediate : graph.adj_list[source]) {
                     if(!graph.adj_set[intermediate].count(destination))
                         continue;
@@ -559,7 +598,7 @@ vector<SDpair> generate_stratified_requests(
                 candidate_profiles.push_back({
                     {source, destination}, best_common_path,
                     feasible_two_hop_intermediates,
-                    best_common_fidelity, true});
+                    best_common_fidelity, 0, 2});
                 for(int intermediate : feasible_two_hop_intermediates) {
                     all_transit_load[intermediate]++;
                     if(feasible_two_hop_intermediates.size() >= 2)
@@ -575,7 +614,7 @@ vector<SDpair> generate_stratified_requests(
             // different swapping-tree/numerology resource profiles.
             if(base_fidelity + EPS >= threshold) {
                 candidate_profiles.push_back({
-                    {source, destination}, path, {}, base_fidelity, true});
+                    {source, destination}, path, {}, base_fidelity, 0, hops});
                 for(int position = 1;
                     position + 1 < (int)path.size(); ++position) {
                     const int intermediate = path[position];
@@ -586,22 +625,27 @@ vector<SDpair> generate_stratified_requests(
                 continue;
             }
 
-            bool feasible_with_purification = false;
+            int minimum_purification_rounds = -1;
             for(int rounds = 1; rounds <= max_purification_rounds; ++rounds) {
                 vector<int> purification(hops, rounds);
                 if(balanced_fidelity(0, hops, link_fidelity, purification)
                    >= threshold) {
-                    feasible_with_purification = true;
+                    minimum_purification_rounds = rounds;
                     break;
                 }
             }
-            if(feasible_with_purification) {
+            if(minimum_purification_rounds > 0) {
+                if(minimum_purification_rounds == 3) {
+                    diagnostics[hops][4]++;
+                    continue;
+                }
                 candidate_profiles.push_back({
-                    {source, destination}, path, {}, base_fidelity, false});
+                    {source, destination}, path, {}, base_fidelity,
+                    minimum_purification_rounds, hops});
                 for(int position = 1; position + 1 < (int)path.size();
                     ++position)
                     all_transit_load[path[position]]++;
-                diagnostics[hops][2]++;
+                diagnostics[hops][1 + minimum_purification_rounds]++;
             }
         }
     }
@@ -621,7 +665,8 @@ vector<SDpair> generate_stratified_requests(
         return left < right;
     });
     set<int> hotspot_nodes;
-    const int hotspot_node_limit = min(1, node_count);
+    const int hotspot_node_limit = min(
+        max(0, config.hotspot_node_limit), node_count);
     for(int position = 0; position < hotspot_node_limit; ++position) {
         const int node = node_order[position];
         if(hotspot_load[node] <= 0) break;
@@ -629,8 +674,18 @@ vector<SDpair> generate_stratified_requests(
     }
 
     vector<ScoredRequest> common_candidates_by_fidelity;
-    vector<ScoredRequest> purification_candidates;
+    array<vector<ScoredRequest>, 3> common_candidates_by_hop;
+    array<vector<ScoredRequest>, REQUEST_STRATUM_COUNT> stratum_candidates;
+    auto hop_index = [&](int hops) -> int {
+        for(int index = 0; index < (int)target_hops.size(); ++index) {
+            if(target_hops[index] == hops) return index;
+        }
+        return -1;
+    };
+
     for(const CandidateProfile& profile : candidate_profiles) {
+        const int profile_hop_index = hop_index(profile.hops);
+        if(profile_hop_index < 0) continue;
         int pressure = 0;
         bool crosses_hotspot = false;
         bool has_background_alternative = false;
@@ -652,21 +707,29 @@ vector<SDpair> generate_stratified_requests(
             ScoredRequest candidate{
                 request, profile.base_fidelity, pressure,
                 crosses_hotspot
-                    && (!profile.common_feasible
-                        || has_background_alternative)};
-            if(profile.common_feasible)
+                    && (profile.minimum_purification_rounds > 0
+                        || has_background_alternative),
+                profile.minimum_purification_rounds,
+                profile.hops};
+            if(profile.minimum_purification_rounds == 0) {
                 common_candidates_by_fidelity.push_back(candidate);
-            else
-                purification_candidates.push_back(candidate);
+                common_candidates_by_hop[profile_hop_index].push_back(
+                    candidate);
+            } else if(profile.minimum_purification_rounds == 1) {
+                stratum_candidates[ONE_ROUND_PURIFICATION].push_back(
+                    candidate);
+            } else if(profile.minimum_purification_rounds == 2) {
+                stratum_candidates[TWO_ROUND_PURIFICATION].push_back(
+                    candidate);
+            }
         };
         add_orientation(profile.request);
         add_orientation({profile.request.second, profile.request.first});
     }
 
-    // Keep the lower and upper fidelity tails.  The omitted middle candidates
-    // would make resource-aware and fidelity-aware choices nearly
-    // indistinguishable; the two tails create the intended quality/resource
-    // trade-off without relying on a hand-tuned absolute fidelity boundary.
+    // Split common-feasible candidates within each hop bucket.  Splitting per
+    // hop prevents the high-fidelity pool from degenerating into only two-hop
+    // requests and keeps the requested 2/3/4-hop mix achievable.
     sort(
         common_candidates_by_fidelity.begin(),
         common_candidates_by_fidelity.end(),
@@ -677,210 +740,261 @@ vector<SDpair> generate_stratified_requests(
                 return left.pressure > right.pressure;
             return left.request < right.request;
         });
-    vector<ScoredRequest> marginal_common_candidates;
-    vector<ScoredRequest> high_common_candidates;
     const int common_split =
         (int)common_candidates_by_fidelity.size() / 2;
-    const int fidelity_tail_size = common_candidates_by_fidelity.empty()
-        ? 0
-        : max(1, (int)ceil(common_candidates_by_fidelity.size() * 0.35));
-    for(int i = 0; i < fidelity_tail_size; ++i) {
-        marginal_common_candidates.push_back(
-            common_candidates_by_fidelity[i]);
-        high_common_candidates.push_back(
-            common_candidates_by_fidelity[
-                common_candidates_by_fidelity.size() - 1 - i]);
+    for(int hop = 0; hop < (int)target_hops.size(); ++hop) {
+        auto& candidates = common_candidates_by_hop[hop];
+        sort(candidates.begin(), candidates.end(),
+             [](const ScoredRequest& left, const ScoredRequest& right) {
+                 if(left.base_fidelity != right.base_fidelity)
+                     return left.base_fidelity < right.base_fidelity;
+                 if(left.pressure != right.pressure)
+                     return left.pressure > right.pressure;
+                 return left.request < right.request;
+             });
+        const int tail_size = candidates.empty()
+            ? 0
+            : max(1, (int)ceil(candidates.size() * 0.40));
+        for(int index = 0; index < tail_size; ++index) {
+            stratum_candidates[MARGINAL_COMMON].push_back(candidates[index]);
+            stratum_candidates[HIGH_COMMON].push_back(
+                candidates[candidates.size() - 1 - index]);
+        }
     }
 
-    if(purification_fraction < 0.0) purification_fraction = 0.0;
-    if(purification_fraction > 1.0) purification_fraction = 1.0;
-    if(hotspot_fraction < 0.0) hotspot_fraction = 0.0;
-    if(hotspot_fraction > 1.0) hotspot_fraction = 1.0;
-    int purification_target = (int)lround(
-        requests_cnt * purification_fraction);
-    int common_target = requests_cnt - purification_target;
-
-    if(common_candidates_by_fidelity.empty()) {
-        cerr << "[request_mix] WARNING: common-feasible pool is empty" << endl;
-        purification_target = requests_cnt;
-        common_target = 0;
-    }
-    if(purification_candidates.empty()) {
-        cerr << "[request_mix] WARNING: purification-feasible pool is empty"
-             << endl;
-        common_target = requests_cnt;
-        purification_target = 0;
-    }
-    if(common_candidates_by_fidelity.empty()
-       && purification_candidates.empty()) {
-        cerr << "[request_mix] ERROR: no physically feasible 1--2-hop requests"
+    int total_candidate_count = 0;
+    for(const auto& candidates : stratum_candidates)
+        total_candidate_count += candidates.size();
+    if(total_candidate_count == 0) {
+        cerr << "[request_mix] ERROR: no feasible 2--4-hop stress requests"
              << endl;
         return {};
     }
-    int high_common_target = common_target / 2;
-    int marginal_common_target = common_target - high_common_target;
-    if(marginal_common_candidates.empty()) {
-        high_common_target = common_target;
-        marginal_common_target = 0;
-    }
-    if(high_common_candidates.empty()) {
-        marginal_common_target = common_target;
-        high_common_target = 0;
-    }
-    const double effective_purification_fraction = requests_cnt > 0
-        ? (double)purification_target / requests_cnt
-        : 0.0;
-    const double effective_high_common_fraction = requests_cnt > 0
-        ? (double)high_common_target / requests_cnt
-        : 0.0;
 
-    random_device random_source;
-    default_random_engine generator(random_source());
-    uniform_int_distribution<int> repeat_distribution(2, 4);
-    auto append_pressure_mixed = [&] (
-        vector<ScoredRequest> candidates,
-        int target,
-        double target_hotspot_fraction,
-        vector<SDpair>& output) {
-        if(target <= 0) return;
+    mt19937 generator(config.random_seed);
+    config.hotspot_candidate_limit = max(1, config.hotspot_candidate_limit);
+    config.minimum_repetitions = max(1, config.minimum_repetitions);
+    config.maximum_repetitions = max(
+        config.minimum_repetitions, config.maximum_repetitions);
+    uniform_int_distribution<int> repeat_distribution(
+        config.minimum_repetitions, config.maximum_repetitions);
 
-        vector<SDpair> hotspot_candidates;
-        vector<SDpair> background_candidates;
-        for(const ScoredRequest& candidate : candidates) {
-            if(candidate.crosses_hotspot)
-                hotspot_candidates.push_back(candidate.request);
-            else
-                background_candidates.push_back(candidate.request);
+    struct SamplingPool {
+        vector<ScoredRequest> candidates;
+        int position = 0;
+        int repetitions_left = 0;
+        ScoredRequest current;
+    };
+    // Last dimension: 0=background, 1=hotspot.
+    array<array<array<SamplingPool, 2>, 3>, REQUEST_STRATUM_COUNT>
+        sampling_pools;
+
+    for(int stratum = 0; stratum < REQUEST_STRATUM_COUNT; ++stratum) {
+        for(const ScoredRequest& candidate : stratum_candidates[stratum]) {
+            const int candidate_hop_index = hop_index(candidate.hops);
+            if(candidate_hop_index < 0) continue;
+            const int pressure_class = candidate.crosses_hotspot ? 1 : 0;
+            sampling_pools[stratum][candidate_hop_index][pressure_class]
+                .candidates.push_back(candidate);
         }
+        for(int hop = 0; hop < 3; ++hop) {
+            auto& hotspot_pool = sampling_pools[stratum][hop][1].candidates;
+            sort(hotspot_pool.begin(), hotspot_pool.end(),
+                 [](const ScoredRequest& left, const ScoredRequest& right) {
+                     if(left.pressure != right.pressure)
+                         return left.pressure > right.pressure;
+                     if(left.base_fidelity != right.base_fidelity)
+                         return left.base_fidelity > right.base_fidelity;
+                     return left.request < right.request;
+                 });
+            if((int)hotspot_pool.size() > config.hotspot_candidate_limit)
+                hotspot_pool.resize(config.hotspot_candidate_limit);
+            shuffle(hotspot_pool.begin(), hotspot_pool.end(), generator);
+            auto& background_pool =
+                sampling_pools[stratum][hop][0].candidates;
+            shuffle(background_pool.begin(), background_pool.end(), generator);
+        }
+    }
 
-        // Model a burst of a few elephant SD flows through the bottleneck.
-        // Repeating these flows before and after the path builder exhausts the
-        // hotspot gives the same request alternative congested/background
-        // paths, which is essential for exercising joint path/numerology
-        // selection rather than only admission control.
-        hotspot_candidate_limit = max(1, hotspot_candidate_limit);
-        if((int)hotspot_candidates.size() > hotspot_candidate_limit)
-            hotspot_candidates.resize(hotspot_candidate_limit);
-
-        int hotspot_target = (int)lround(
-            target * target_hotspot_fraction);
-        if(hotspot_candidates.empty()) hotspot_target = 0;
-        if(background_candidates.empty()) hotspot_target = target;
-        const int background_target = target - hotspot_target;
-
-        auto sample_repeated = [&](vector<SDpair> pool, int amount) {
-            vector<SDpair> sampled;
-            sampled.reserve(amount);
-            while((int)sampled.size() < amount) {
-                shuffle(pool.begin(), pool.end(), generator);
-                for(const SDpair& request : pool) {
-                    int repeat = min(
-                        repeat_distribution(generator),
-                        amount - (int)sampled.size());
-                    for(int copy = 0; copy < repeat; ++copy)
-                        sampled.push_back(request);
-                    if((int)sampled.size() == amount) break;
-                }
+    auto draw_from_pool = [&](int stratum, int hop, int pressure_class,
+                              ScoredRequest& selected) -> bool {
+        SamplingPool& pool = sampling_pools[stratum][hop][pressure_class];
+        if(pool.candidates.empty()) return false;
+        if(pool.repetitions_left == 0) {
+            if(pool.position >= (int)pool.candidates.size()) {
+                shuffle(pool.candidates.begin(), pool.candidates.end(), generator);
+                pool.position = 0;
             }
-            return sampled;
-        };
-
-        vector<SDpair> hotspot_requests =
-            sample_repeated(hotspot_candidates, hotspot_target);
-        vector<SDpair> background_requests =
-            sample_repeated(background_candidates, background_target);
-
-        int hotspot_position = 0;
-        int background_position = 0;
-        const double effective_hotspot_fraction = target > 0
-            ? (double)hotspot_target / target
-            : 0.0;
-        for(int prefix = 1; prefix <= target; ++prefix) {
-            const int desired_hotspot = (int)lround(
-                prefix * effective_hotspot_fraction);
-            if(hotspot_position < desired_hotspot)
-                output.push_back(hotspot_requests[hotspot_position++]);
-            else
-                output.push_back(
-                    background_requests[background_position++]);
+            pool.current = pool.candidates[pool.position++];
+            pool.repetitions_left = repeat_distribution(generator);
         }
+        selected = pool.current;
+        pool.repetitions_left--;
+        return true;
     };
 
-    vector<SDpair> marginal_common_requests;
-    vector<SDpair> high_common_requests;
-    vector<SDpair> purification_requests;
-    marginal_common_requests.reserve(marginal_common_target);
-    high_common_requests.reserve(high_common_target);
-    purification_requests.reserve(purification_target);
-    // Marginal requests include more resource-efficient background traffic,
-    // whereas high-quality and purification-needed requests apply stronger
-    // pressure to the hotspot.  This produces a controlled value/resource
-    // conflict instead of uniformly congesting every fidelity class.
-    const double marginal_hotspot_fraction = max(
-        0.0L, hotspot_fraction - 0.25L);
-    append_pressure_mixed(
-        marginal_common_candidates,
-        marginal_common_target,
-        marginal_hotspot_fraction,
-        marginal_common_requests);
-    append_pressure_mixed(
-        high_common_candidates,
-        high_common_target,
-        hotspot_fraction,
-        high_common_requests);
-    append_pressure_mixed(
-        purification_candidates, purification_target, hotspot_fraction,
-        purification_requests);
+    int pressure_fallbacks = 0;
+    int hop_fallbacks = 0;
+    int stratum_fallbacks = 0;
+    auto draw_with_fallback = [&] (
+        int requested_stratum,
+        int requested_hop,
+        bool want_hotspot,
+        ScoredRequest& selected,
+        int& actual_stratum,
+        int& actual_hop) -> bool {
+        const int requested_pressure = want_hotspot ? 1 : 0;
+        if(draw_from_pool(requested_stratum, requested_hop,
+                          requested_pressure, selected)) {
+            actual_stratum = requested_stratum;
+            actual_hop = requested_hop;
+            return true;
+        }
+        if(draw_from_pool(requested_stratum, requested_hop,
+                          1 - requested_pressure, selected)) {
+            pressure_fallbacks++;
+            actual_stratum = requested_stratum;
+            actual_hop = requested_hop;
+            return true;
+        }
+        for(int hop = 0; hop < 3; ++hop) {
+            if(hop == requested_hop) continue;
+            for(int pressure : {requested_pressure, 1 - requested_pressure}) {
+                if(draw_from_pool(requested_stratum, hop, pressure, selected)) {
+                    hop_fallbacks++;
+                    actual_stratum = requested_stratum;
+                    actual_hop = hop;
+                    return true;
+                }
+            }
+        }
+        for(int stratum = 0; stratum < REQUEST_STRATUM_COUNT; ++stratum) {
+            if(stratum == requested_stratum) continue;
+            for(int pressure : {requested_pressure, 1 - requested_pressure}) {
+                if(draw_from_pool(stratum, requested_hop, pressure, selected)) {
+                    stratum_fallbacks++;
+                    actual_stratum = stratum;
+                    actual_hop = requested_hop;
+                    return true;
+                }
+            }
+        }
+        for(int stratum = 0; stratum < REQUEST_STRATUM_COUNT; ++stratum) {
+            for(int hop = 0; hop < 3; ++hop) {
+                for(int pressure = 0; pressure <= 1; ++pressure) {
+                    if(draw_from_pool(stratum, hop, pressure, selected)) {
+                        stratum_fallbacks++;
+                        hop_fallbacks++;
+                        actual_stratum = stratum;
+                        actual_hop = hop;
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
 
-    // The request-count experiment consumes prefixes of this pool.  Mix in
-    // ten-request blocks so every 80/100/... prefix stays close to the target
-    // composition instead of depending on one global shuffle.
+    // The request-count experiment consumes prefixes of this pool.  The 20-
+    // request template has exact 35/25/30/10 stratum and 30/60/10 hop ratios,
+    // so every 80/100/... prefix preserves the intended workload composition.
     vector<SDpair> requests;
     requests.reserve(requests_cnt);
-    int marginal_common_position = 0;
-    int high_common_position = 0;
-    int purification_position = 0;
+    array<array<int, 3>, REQUEST_STRATUM_COUNT> actual_mix{};
+    array<int, REQUEST_STRATUM_COUNT> stratum_slots_seen{};
+    array<int, REQUEST_STRATUM_COUNT> actual_hotspot_by_stratum{};
+    int selected_hotspot_count = 0;
     while((int)requests.size() < requests_cnt) {
-        const int block_size = min(10, requests_cnt - (int)requests.size());
-        const int prefix_end = (int)requests.size() + block_size;
-        const int desired_purification = (int)lround(
-            prefix_end * effective_purification_fraction);
-        int block_purification =
-            desired_purification - purification_position;
-        block_purification = min(
-            block_purification,
-            (int)purification_requests.size() - purification_position);
-        const int desired_high_common = (int)lround(
-            prefix_end * effective_high_common_fraction);
-        int block_high_common =
-            desired_high_common - high_common_position;
-        block_high_common = min(
-            block_high_common,
-            (int)high_common_requests.size() - high_common_position);
-        const int block_marginal_common =
-            block_size - block_purification - block_high_common;
+        const int block_size = min(20, requests_cnt - (int)requests.size());
+        array<array<int, 3>, REQUEST_STRATUM_COUNT> block_mix{};
+        struct FractionalCell {
+            double remainder;
+            int stratum;
+            int hop;
+        };
+        vector<FractionalCell> fractional_cells;
+        int assigned = 0;
+        for(int stratum = 0; stratum < REQUEST_STRATUM_COUNT; ++stratum) {
+            for(int hop = 0; hop < 3; ++hop) {
+                const double exact =
+                    config.stratum_hop_fraction[stratum][hop] * block_size;
+                block_mix[stratum][hop] = (int)floor(exact + 1e-9);
+                assigned += block_mix[stratum][hop];
+                fractional_cells.push_back({
+                    exact - floor(exact + 1e-9), stratum, hop});
+            }
+        }
+        sort(fractional_cells.begin(), fractional_cells.end(),
+             [](const FractionalCell& left, const FractionalCell& right) {
+                 if(left.remainder != right.remainder)
+                     return left.remainder > right.remainder;
+                 if(left.stratum != right.stratum)
+                     return left.stratum < right.stratum;
+                 return left.hop < right.hop;
+             });
+        for(int index = 0; assigned < block_size; ++index, ++assigned) {
+            const FractionalCell& cell =
+                fractional_cells[index % fractional_cells.size()];
+            block_mix[cell.stratum][cell.hop]++;
+        }
 
-        vector<SDpair> block;
+        vector<pair<int, int>> block;
         block.reserve(block_size);
-        for(int i = 0; i < block_marginal_common; ++i)
-            block.push_back(
-                marginal_common_requests[marginal_common_position++]);
-        for(int i = 0; i < block_high_common; ++i)
-            block.push_back(high_common_requests[high_common_position++]);
-        for(int i = 0; i < block_purification; ++i)
-            block.push_back(
-                purification_requests[purification_position++]);
+        for(int stratum = 0; stratum < REQUEST_STRATUM_COUNT; ++stratum) {
+            for(int hop = 0; hop < 3; ++hop) {
+                for(int copy = 0; copy < block_mix[stratum][hop]; ++copy)
+                    block.push_back({stratum, hop});
+            }
+        }
         shuffle(block.begin(), block.end(), generator);
-        requests.insert(requests.end(), block.begin(), block.end());
+        for(const auto& [requested_stratum, requested_hop] : block) {
+            const int next_stratum_count =
+                stratum_slots_seen[requested_stratum] + 1;
+            const double hotspot_fraction = min(
+                1.0L,
+                max(0.0L, config.hotspot_fraction[requested_stratum]));
+            const int desired_hotspot_count = (int)lround(
+                next_stratum_count * hotspot_fraction);
+            const bool want_hotspot =
+                actual_hotspot_by_stratum[requested_stratum]
+                    < desired_hotspot_count;
+
+            ScoredRequest selected;
+            int actual_stratum = -1, actual_hop = -1;
+            if(!draw_with_fallback(
+                   requested_stratum, requested_hop, want_hotspot,
+                   selected, actual_stratum, actual_hop)) {
+                cerr << "[request_mix] ERROR: all sampling pools are empty"
+                     << endl;
+                return {};
+            }
+            requests.push_back(selected.request);
+            stratum_slots_seen[requested_stratum]++;
+            if(selected.crosses_hotspot)
+                actual_hotspot_by_stratum[requested_stratum]++;
+            selected_hotspot_count += selected.crosses_hotspot;
+            actual_mix[actual_stratum][actual_hop]++;
+        }
     }
 
+    const array<const char*, REQUEST_STRATUM_COUNT> stratum_names{{
+        "marginal", "high", "purify-1", "purify-2"
+    }};
     cerr << "[request_mix] threshold=" << threshold
          << " T=" << T << " tao=" << tao
-         << " hops=" << minimum_hops << "--" << maximum_hops
-         << " | selected common=" << common_target
-         << " (marginal=" << marginal_common_target
-         << ", high=" << high_common_target << ")"
-         << " purification=" << purification_target << endl;
+         << " hops=" << config.minimum_hops << "--" << config.maximum_hops
+         << " | stress workload seed=" << config.random_seed << endl;
+    cerr << "  achieved stratum/hop mix:" << endl;
+    for(int stratum = 0; stratum < REQUEST_STRATUM_COUNT; ++stratum) {
+        int stratum_total = 0;
+        cerr << "    " << stratum_names[stratum] << ":";
+        for(int hop = 0; hop < 3; ++hop) {
+            stratum_total += actual_mix[stratum][hop];
+            cerr << " " << target_hops[hop] << "hop="
+                 << actual_mix[stratum][hop];
+        }
+        cerr << " total=" << stratum_total << endl;
+    }
     if(!common_candidates_by_fidelity.empty()) {
         const double minimum_common_fidelity =
             common_candidates_by_fidelity.front().base_fidelity;
@@ -895,35 +1009,35 @@ vector<SDpair> generate_stratified_requests(
     cerr << "  hotspot nodes:";
     for(int node : hotspot_nodes)
         cerr << " v" << node << "(candidate_load=" << hotspot_load[node]
-             << ")";
-    cerr << " | hotspot fractions marginal/high="
-         << marginal_hotspot_fraction << "/" << hotspot_fraction << endl;
+              << ")";
+    cerr << " | selected hotspot=" << selected_hotspot_count << "/"
+         << requests.size() << endl;
+    cerr << "  fallbacks pressure=" << pressure_fallbacks
+         << " hop=" << hop_fallbacks
+         << " stratum=" << stratum_fallbacks << endl;
 
-    int hotspot_request_count = 0;
     int peak_internal_node_load = 0;
     vector<int> selected_internal_load(node_count, 0);
     set<SDpair> unique_requests;
     for(const SDpair& request : requests) {
         unique_requests.insert(request);
         Path path = shortest_path(request.first, request.second);
-        bool crosses_hotspot = false;
         for(int position = 1; position + 1 < (int)path.size(); ++position) {
             const int node = path[position];
-            crosses_hotspot = crosses_hotspot || hotspot_nodes.count(node);
             peak_internal_node_load = max(
                 peak_internal_node_load, ++selected_internal_load[node]);
         }
-        hotspot_request_count += crosses_hotspot;
     }
-    cerr << "  selected hotspot requests=" << hotspot_request_count << "/"
-         << requests.size() << " | unique directed SD pairs="
+    cerr << "  unique directed SD pairs="
          << unique_requests.size() << " | peak internal-node demand="
          << peak_internal_node_load << endl;
     for(const auto& [hops, count] : diagnostics) {
         cerr << "  hop=" << hops
              << " candidates=" << count[0]
              << " common=" << count[1]
-             << " purification=" << count[2] << endl;
+             << " purify-1=" << count[2]
+             << " purify-2=" << count[3]
+             << " excluded-purify-3=" << count[4] << endl;
     }
     return requests;
 }
@@ -959,11 +1073,13 @@ int main(){
     // The default workload itself is stratified below.  hop_count is only the
     // requested distance in the dedicated hop_count experiment.
     default_setting["hop_count"]=2;
-    default_setting["purification_request_fraction"]=0.25;
-    default_setting["request_hotspot_fraction"]=0.65;
     default_setting["request_min_hops"]=2;
     default_setting["request_max_hops"]=4;
-    default_setting["request_hotspot_candidate_limit"]=3;
+    default_setting["request_hotspot_node_limit"]=2;
+    default_setting["request_hotspot_candidate_limit"]=8;
+    default_setting["request_repeat_min"]=1;
+    default_setting["request_repeat_max"]=3;
+    default_setting["request_seed"]=20260820;
     default_setting["delta_P"]=0.01;
     map<string, vector<double>> change_parameter;
     change_parameter["request_cnt"] = {80,100,120,140,160};
@@ -1006,8 +1122,10 @@ int main(){
         string filename = file_path + "input/round_" + to_string(r) + ".input";
         string command = "python3 graph_generator.py ";
         double A = 0.25, B = 0.75, tao = default_setting["tao"], T = 0.04, n = 2;
-        // derandom
-        string parameter = to_string(num_nodes);
+        const unsigned int experiment_seed =
+            (unsigned int)default_setting["request_seed"] + r;
+        string parameter = to_string(num_nodes) + " "
+                         + to_string(experiment_seed);
         cerr << (command + filename + " " + parameter) << endl;
         if(system((command + filename + " " + parameter).c_str()) != 0){
             cerr<<"error:\tsystem proccess python error"<<endl;
@@ -1015,13 +1133,22 @@ int main(){
         }
         Graph graph(filename, time_limit, swap_prob, avg_memory, min_fidelity, max_fidelity, fidelity_threshold, A, B, n, T, tao,Zmin,bucket_eps,time_eta,input_parameter["delta_P"],input_parameter["entangle_lambda"],input_parameter["entangle_time"]);
         const int total_cnt = 200;  // pool must cover max(request_cnt)=160
+        RequestGenerationConfig request_config;
+        request_config.minimum_hops =
+            (int)default_setting["request_min_hops"];
+        request_config.maximum_hops =
+            (int)default_setting["request_max_hops"];
+        request_config.hotspot_node_limit =
+            (int)default_setting["request_hotspot_node_limit"];
+        request_config.hotspot_candidate_limit =
+            (int)default_setting["request_hotspot_candidate_limit"];
+        request_config.minimum_repetitions =
+            (int)default_setting["request_repeat_min"];
+        request_config.maximum_repetitions =
+            (int)default_setting["request_repeat_max"];
+        request_config.random_seed = experiment_seed;
         default_requests[r] = generate_stratified_requests(
-            graph, total_cnt,
-            default_setting["purification_request_fraction"],
-            default_setting["request_hotspot_fraction"],
-            (int)default_setting["request_min_hops"],
-            (int)default_setting["request_max_hops"],
-            (int)default_setting["request_hotspot_candidate_limit"]);
+            graph, total_cnt, request_config);
 
         {
             map<int, int> hop_dist;
@@ -1037,14 +1164,21 @@ int main(){
             for (auto &[h, cnt] : hop_dist)
                 cerr << h << "hop=" << cnt << " ";
             cerr << endl
-                  << "  target purification-needed fraction="
-                 << default_setting["purification_request_fraction"]
-                 << " | target hotspot fraction="
-                 << default_setting["request_hotspot_fraction"] << endl
+                 << "  target strata marginal/high/purify-1/purify-2="
+                 << "0.35/0.25/0.30/0.10"
+                 << " | target hops 2/3/4=0.30/0.60/0.10" << endl
                  << "================================================"
                  << "\033[0m" << endl;
         }
         assert(!default_requests[r].empty());
+    }
+
+    // Useful for validating the workload mix without running every routing
+    // algorithm.  Normal experiments are unchanged when the variable is unset.
+    if(std::getenv("REQUEST_GENERATION_ONLY") != nullptr) {
+        cerr << "[request_mix] REQUEST_GENERATION_ONLY: stop after validation"
+             << endl;
+        return 0;
     }
 
 
