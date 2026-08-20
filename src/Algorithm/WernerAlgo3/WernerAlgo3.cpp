@@ -376,7 +376,7 @@ void WernerAlgo3::run() {
         variable_initialize();
         int it=0;
         double eps=1e-4;
-        const int REUSE = 20;
+        const int REUSE = 10;
         cerr << "[" << algorithm_name << "] LP phase start, requests=" << requests.size() << endl;
         while (obj+eps < 1.0) {
             it++;
