@@ -32,7 +32,9 @@ public:
                const vector<pair<int,int>>& requests,
                const map<SDpair, vector<Path>>& paths,
                double epsilon = 0.5,
-               double bucket_eps = -1.0);
+               // WPFA uses finer Z/P buckets than the shared graph default.
+               // Runtime experiments can still override this explicitly.
+               double bucket_eps = 0.001);
 
     void run();
     void set_experiment_label(const string& label) { experiment_label = label; }

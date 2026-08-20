@@ -154,8 +154,11 @@ WernerAlgo2::ZLabel WernerAlgo2::gen_leaf_label(int s,int e,int st,int tlen,int 
 void WernerAlgo2::run_dp_in_t(const Path& path, const DPParam& dpp,int t) {
     const int T = graph.get_time_limit();
     const int n = (int)path.size();
-    const size_t MAX_CANDIDATES_PER_CELL = 1000;
-    const size_t MAX_LABELS_PER_CELL = 100;
+    // Finer Z/P buckets only improve decisions if the retained-label limits
+    // grow with them.  Otherwise the later hard truncation would discard the
+    // additional alternatives produced by the smaller bucket epsilon.
+    const size_t MAX_CANDIDATES_PER_CELL = 5000;
+    const size_t MAX_LABELS_PER_CELL = 500;
     auto trim_cell = [&](vector<ZLabel>& labels) {
         if(labels.size() <= MAX_LABELS_PER_CELL) return;
         nth_element(labels.begin(), labels.begin() + MAX_LABELS_PER_CELL, labels.end(),

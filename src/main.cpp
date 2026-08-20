@@ -951,6 +951,8 @@ int main(){
     default_setting["entangle_time"] = 0.00025;
     default_setting["entangle_prob"] = 0.01;
     default_setting["Zmin"]=0.02702867239;
+    // Shared default for the other Werner algorithms; WPFA supplies its finer
+    // default through WernerAlgo2's constructor.
     default_setting["bucket_eps"]=0.01;
     default_setting["time_eta"]=0.001;
     // The default workload itself is stratified below.  hop_count is only the
