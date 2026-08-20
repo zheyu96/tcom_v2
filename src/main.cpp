@@ -2,6 +2,7 @@
 #include "./config.h"
 #include <sys/resource.h>
 #include <array>
+#include <chrono>
 #include <new>
 #include <stdexcept>
 #include "Network/Graph/Graph.h"
@@ -953,7 +954,7 @@ int main(){
     default_setting["Zmin"]=0.02702867239;
     // Shared default for the other Werner algorithms; WPFA supplies its finer
     // default through WernerAlgo2's constructor.
-    default_setting["bucket_eps"]=0.0001;
+    default_setting["bucket_eps"]=0.001;
     default_setting["time_eta"]=0.001;
     // The default workload itself is stratified below.  hop_count is only the
     // requested distance in the dedicated hop_count experiment.
@@ -1053,7 +1054,9 @@ int main(){
     //vector<string> X_names = {"request_cnt"};
     vector<string> X_names = { "request_cnt", "time_limit", "tao",  "fidelity_threshold" , "avg_memory","hop_count","swap_prob" };
     //vector<string> X_names = {"Zmin","bucket_eps","time_eta"};
-    vector<string> Y_names = {"fidelity_gain", "succ_request_cnt","actual_req_cnt"};
+    vector<string> Y_names = {
+        "fidelity_gain", "succ_request_cnt", "actual_req_cnt", "runtime"
+    };
     vector<string> algo_names = {"ZFA_UB", "ZFA", "ZFA2", "MyAlgo1", "MyAlgo3"};
     if(EFiRAP::gurobi_available()) {
         algo_names.push_back("EFiRAP");
@@ -1276,10 +1279,16 @@ int main(){
                     }
 
 
+                    // Measure algorithms sequentially so their wall-clock
+                    // times do not contend for CPU cores with one another.
+                    using RuntimeValue = decltype(0.0L);
+                    vector<RuntimeValue> runtime_seconds(
+                        algorithms.size(), RuntimeValue{0});
                     //#pragma omp parallel for schedule(dynamic)
                     for(int i = 0; i < (int)algorithms.size(); i++) {
                         cerr << "[CKPT] >>> RUN algo[" << i << "] = " << algorithms[i]->get_name() << endl;
                         DBG_mem("before_run");
+                        const auto runtime_start = chrono::steady_clock::now();
                         try {
                             algorithms[i]->run();
                         } catch(const std::bad_alloc& e) {
@@ -1292,15 +1301,25 @@ int main(){
                                  << algorithms[i]->get_name() << " : " << e.what() << endl;
                             throw;
                         }
+                        const auto runtime_end = chrono::steady_clock::now();
+                        runtime_seconds[i] =
+                            chrono::duration<RuntimeValue>(
+                                runtime_end - runtime_start).count();
                         cerr << "[CKPT] <<< DONE algo[" << i << "] = " << algorithms[i]->get_name() << endl;
+                        cerr << "[RUNTIME] " << algorithms[i]->get_name()
+                             << " = " << runtime_seconds[i] << " s" << endl;
                         DBG_mem("after_run");
                     }
 
-
-
                     for(int i = 0; i < (int)algorithms.size(); i++) {
                         for(string Y_name : Y_names) {
-                            result[r][algorithms[i]->get_name()][Y_name] = algorithms[i]->get_res(Y_name);
+                            if(Y_name == "runtime") {
+                                result[r][algorithms[i]->get_name()][Y_name] =
+                                    runtime_seconds[i];
+                            } else {
+                                result[r][algorithms[i]->get_name()][Y_name] =
+                                    algorithms[i]->get_res(Y_name);
+                            }
                         }
                     }
 

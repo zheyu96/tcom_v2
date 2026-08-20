@@ -147,6 +147,13 @@ class ChartGenerator:
             'hop_count': _RIGHT_TOP,
             'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP
         },
+        'runtime':{
+            'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
+            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
+            'hop_count': _RIGHT_TOP,
+            'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP
+        },
     }
 
     _Y_INTERVALS = {
@@ -182,6 +189,12 @@ class ChartGenerator:
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
+        'runtime':{
+            'request_cnt': "auto", 'tao': "auto", 'time_limit': "auto",
+            'avg_memory': "auto", 'min_fidelity': "auto", 'fidelity_threshold': "auto",
+            'swap_prob': "auto", 'hop_count': "auto", 'entangle_time': "auto",
+            'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
+        },
     }
 
     _AXIS_NAME = {
@@ -190,6 +203,7 @@ class ChartGenerator:
         "swap_prob": "Swapping Probability", "fidelity_gain": "Exp. Werner Param. Sum",
         "succ_request_cnt": r"$\#$Exp. Accepted Requests", "pure_fidelity": "Average Final Fidelity",
         "actual_req_cnt": r"$\#$Accpected Requests",
+        "runtime": "Runtime (s)",
         "fidelity_threshold": "Fidelity Threshold", "min_fidelity": "Minimum Initial Fidelity",
         "entangle_time": "Entangling Time", "entangle_prob": "Entangling Probability",
         "Zmin": r"$Z_{min}$", "time_eta": r"$\eta$", "bucket_eps": r"bucket $\epsilon$",
@@ -456,7 +470,10 @@ if __name__ == "__main__":
         "request_cnt", "time_limit", "tao",
         "avg_memory", "fidelity_threshold", "min_fidelity","hop_count",
     ]
-    Ylabels = ["fidelity_gain", "succ_request_cnt", "pure_fidelity", "actual_req_cnt"]
+    Ylabels = [
+        "fidelity_gain", "succ_request_cnt", "pure_fidelity",
+        "actual_req_cnt", "runtime",
+    ]
     PathNames = ["Greedy"]
 
     OVERRIDE_LABEL_EVERY = None
