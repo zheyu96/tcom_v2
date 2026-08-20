@@ -185,7 +185,7 @@ void WernerAlgo2::run_dp_in_t(const Path& path, const DPParam& dpp,int t) {
             //leaf
             if(a+1==b){
                 for(int i=0;i<=purify_time;i++){
-                    if(t-i-1<=0) continue;
+                    if(t-i<=0) continue;
                     ZLabel L=gen_leaf_label(s,e,t,i+1,a,b);
                     if(L.Z<=dpp.Zhat){
                         L.ent_time={t-i-1,t};
