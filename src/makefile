@@ -1,6 +1,7 @@
 # --- 路徑與變數設定 ---
 # 基礎依賴物件
 dependency = Network/Node/Node.o Network/Shape/Shape.o Network/Graph/Graph.o Algorithm/AlgorithmBase/AlgorithmBase.o config.o
+workload = ExperimentWorkload.o
 
 # 完整演算法物件 (用於 a.out / main.cpp)
 algorithm = Algorithm/MyAlgo1/MyAlgo1.o Algorithm/MyAlgo2/MyAlgo2.o Algorithm/MyAlgo3/MyAlgo3.o \
@@ -14,10 +15,15 @@ algorithm = Algorithm/MyAlgo1/MyAlgo1.o Algorithm/MyAlgo2/MyAlgo2.o Algorithm/My
 algorithm_zfa = Algorithm/WernerAlgo_time/WernerAlgo_time.o 
 algorithm_zfa2 = Algorithm/WernerAlgo2/WernerAlgo2.o
 algorithm2 = Algorithm/MyAlgo3/MyAlgo3.o Algorithm/MyAlgo1_time/MyAlgo1_time.o
+algorithm_runtime_compare = Algorithm/WernerAlgo2/WernerAlgo2.o \
+                            Algorithm/EFiRAP/EFiRAP.o \
+                            Algorithm/EFiRAP_longtime/EFiRAP_longtime.o
 
 # 路由與路徑方法
 routing = Network/PathMethod/PathMethodBase/PathMethod.o Network/PathMethod/Greedy/Greedy.o \
           Network/PathMethod/QCAST/QCAST.o Network/PathMethod/REPS/REPS.o
+routing_runtime_compare = Network/PathMethod/PathMethodBase/PathMethod.o \
+                          Network/PathMethod/Greedy/Greedy.o
 
 # 編譯旗標
 gcc_flag = -O3 -fopenmp -march=native --std=c++17
@@ -65,9 +71,14 @@ zfa2_run: ZFA2_runtime.cpp $(dependency) $(algorithm_zfa2) $(routing)
 runtime: runtime.cpp $(dependency) $(algorithm2) $(routing)
 	g++ -fopenmp $(gcc_flag) runtime.cpp $(dependency) $(algorithm2) $(routing) $(gurobi_flag) -o runtime
 
+# Standalone, sequential WPFA/EFiRAP runtime benchmark. This target only
+# builds the executable; run ./runtime_compare --help for benchmark options.
+runtime_compare: runtime_compare.cpp $(workload) $(dependency) $(algorithm_runtime_compare) $(routing_runtime_compare)
+	g++ -fopenmp $(gcc_flag) runtime_compare.cpp $(workload) $(dependency) $(algorithm_runtime_compare) $(routing_runtime_compare) $(gurobi_flag) -o runtime_compare
+
 # 4. 預設主程式目標 (包含 MyAlgo 1-6)
-a.out: main.cpp $(dependency) $(algorithm) $(routing)
-	g++ -fopenmp $(gcc_flag) main.cpp $(dependency) $(algorithm) $(routing) $(gurobi_flag) -o a.out
+a.out: main.cpp $(workload) $(dependency) $(algorithm) $(routing)
+	g++ -fopenmp $(gcc_flag) main.cpp $(workload) $(dependency) $(algorithm) $(routing) $(gurobi_flag) -o a.out
 	> ../data/log/ZFA2_Purification_Stats.txt
 	./a.out
 
@@ -135,13 +146,16 @@ Network/PathMethod/PathMethodBase/PathMethod.o: Network/PathMethod/PathMethodBas
 config.o: config.h config.cpp
 	g++ -c $(gcc_flag) config.cpp -o config.o
 
+ExperimentWorkload.o: ExperimentWorkload.cpp ExperimentWorkload.h Network/Graph/Graph.h config.h
+	g++ -c $(gcc_flag) ExperimentWorkload.cpp -o ExperimentWorkload.o
+
 # --- 清除工具 ---
 clean:
-	rm -f a.out zfa_run zfa2_run runtime
+	rm -f a.out zfa_run zfa2_run runtime runtime_compare runtime_compare.exe
 	find . -type f -name '*.o' -delete
 	find . -type f -name '*.h.gch' -delete
 	rm -f ../data/ans/*.ans
 	rm -f ../data/log/*
 	rm -f ../data/input/*
 
-.PHONY: clean all zfa_run zfa2_run runtime
+.PHONY: clean all zfa_run zfa2_run runtime runtime_compare

@@ -5,6 +5,7 @@
 *.txt
 *.log
 *.ans
+data/ans/*.csv
 *.input
 *.eps
 *.jpg
