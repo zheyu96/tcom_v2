@@ -19,16 +19,6 @@ constexpr double DIJKSTRA_EPS = 1e-12;
 constexpr double MARGINAL_TIE_EPS = 1e-10;
 constexpr int MAX_PURIFICATION_ROUNDS = 3;
 
-// Same purification memory profile as WPFA's Purify_in_vt. Row r stores the
-// total number of cells required at each reverse-time index for r rounds.
-constexpr int PURIFICATION_MEMORY_PROFILE
-    [MAX_PURIFICATION_ROUNDS + 1][MAX_PURIFICATION_ROUNDS + 2] = {
-        {1, 1, 0, 0, 0},
-        {1, 2, 2, 0, 0},
-        {1, 2, 3, 2, 0},
-        {1, 2, 3, 3, 2},
-    };
-
 bool has_prefix(const Path& path, const Path& prefix) {
     if(path.size() < prefix.size()) return false;
     for(size_t i = 0; i < prefix.size(); ++i) {
@@ -301,9 +291,8 @@ map<EFiRAP::ResourceKey, int> EFiRAP::calculate_memory_usage(
         }
     }
 
-    // Apply the same multi-timeslot purification profile as WPFA. The primary
-    // cell is already included by the Shape ranges above, so add only the
-    // profile's extra cells at both endpoints.
+    // EFiRAP generates all sacrificial pairs simultaneously. Their memory
+    // cells stay occupied through the end of the simulation horizon.
     for(size_t link = 0; link + 1 < shape_vector.size(); ++link) {
         int rounds = link < purify_rounds.size() ? purify_rounds[link] : 0;
         if(rounds <= 0) continue;
@@ -311,15 +300,9 @@ map<EFiRAP::ResourceKey, int> EFiRAP::calculate_memory_usage(
         int link_start = shape_vector[link].second.back().first;
         int left_node = shape_vector[link].first;
         int right_node = shape_vector[link + 1].first;
-        for(int offset = 0; offset <= rounds + 1; ++offset) {
-            int profile_index = rounds + 1 - offset;
-            int extra =
-                PURIFICATION_MEMORY_PROFILE[rounds][profile_index] - 1;
-            if(extra <= 0) continue;
-
-            int time = link_start + offset;
-            usage[{left_node, time}] += extra;
-            usage[{right_node, time}] += extra;
+        for(int t = link_start; t < time_limit; ++t) {
+            usage[{left_node, t}] += rounds;
+            usage[{right_node, t}] += rounds;
         }
     }
     return usage;

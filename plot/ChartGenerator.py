@@ -151,7 +151,7 @@ class ChartGenerator:
 
     _Y_INTERVALS = {
         'fidelity_gain':{
-            'request_cnt': (35, 105, 5, 7), 'tao': (20, 60, 5, 2),
+            'request_cnt': (20, 105, 5, 4), 'tao': (20, 60, 5, 2),
             'time_limit': (30, 55, 5, 1), 'avg_memory': (0, 30, 5, 2),
             'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 85, 5, 4),
             'swap_prob': (20, 55, 5, 1), 'entangle_time': "auto",
@@ -200,11 +200,15 @@ class ChartGenerator:
 
     # 欄位順序與 main.cpp 相同：
     # ZFA_UB=WernerAlgo3, ZFA=WernerAlgo, ZFA2=WernerAlgo2,
-    # MyAlgo1=MyAlgo1, MyAlgo3=MyAlgo3, EFiRAP=EFiRAP
-    _ALGO_NAMES = ["UB", "WPFA-noPurify", "WPFA", "FNPR", "FLTO", "EFiRAP"]
+    # MyAlgo1=MyAlgo1, MyAlgo3=MyAlgo3, EFiRAP=EFiRAP,
+    # EFiRAP_longtime=EFiRAP-time
+    _ALGO_NAMES = [
+        "UB", "WPFA-noPurify", "WPFA", "FNPR", "FLTO", "EFiRAP",
+        "EFiRAP-time",
+    ]
 
-    # 保持資料欄位順序，並包含第 6 個演算法 EFiRAP。
-    _DRAW_ORDER = [0, 1, 2, 3, 4, 5]
+    # 保持資料欄位順序，EFiRAP-time 是 main.cpp 輸出的最後一個演算法。
+    _DRAW_ORDER = [0, 1, 2, 3, 4, 5, 6]
 
     # 保持原本各欄位使用的 marker 與顏色。
     _MARKERS = ['s', '*', 's', 'v', 'o', '^', 'x', '1', 'D']

@@ -37,8 +37,9 @@ using namespace std;
  *     project's Werner/decoherence model, not the paper's bit-flip model.
  *   - There is no independent link-capacity constraint. One primary Bell
  *     pair and every sacrificial pair consume memory at both link endpoints.
- *   - Purification uses the same per-round duration and per-timeslot memory
- *     profile as WPFA. Memory is reusable after the operation lifetime ends.
+ *   - All sacrificial pairs for a link are generated simultaneously and stay
+ *     occupied through time_limit - 1. Primary memory remains reusable after
+ *     its Shape lifetime ends.
  *   - EPS follows Algorithm 2 in the paper: solve the LP relaxation, enumerate
  *     bounded integer lower-bound guesses, re-solve the LP, and floor it.
  */

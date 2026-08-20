@@ -39,8 +39,9 @@ using namespace std;
  *     pair and every sacrificial pair consume memory at both link endpoints.
  *   - Purification uses the same per-round duration and per-timeslot memory
  *     profile as WPFA.
- *   - Once a primary or purification memory cell is first used, it remains
- *     occupied through time_limit - 1. Operation timing itself is unchanged.
+ *   - All sacrificial pairs for a link are generated simultaneously. Once a
+ *     primary or sacrificial memory cell is used, it remains occupied through
+ *     time_limit - 1. Operation timing itself is unchanged.
  *   - EPS follows Algorithm 2 in the paper: solve the LP relaxation, enumerate
  *     bounded integer lower-bound guesses, re-solve the LP, and floor it.
  */

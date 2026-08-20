@@ -19,16 +19,6 @@ constexpr double DIJKSTRA_EPS = 1e-12;
 constexpr double MARGINAL_TIE_EPS = 1e-10;
 constexpr int MAX_PURIFICATION_ROUNDS = 3;
 
-// Same purification memory profile as WPFA's Purify_in_vt. Row r stores the
-// total number of cells required at each reverse-time index for r rounds.
-constexpr int PURIFICATION_MEMORY_PROFILE
-    [MAX_PURIFICATION_ROUNDS + 1][MAX_PURIFICATION_ROUNDS + 2] = {
-        {1, 1, 0, 0, 0},
-        {1, 2, 2, 0, 0},
-        {1, 2, 3, 2, 0},
-        {1, 2, 3, 3, 2},
-    };
-
 bool has_prefix(const Path& path, const Path& prefix) {
     if(path.size() < prefix.size()) return false;
     for(size_t i = 0; i < prefix.size(); ++i) {
@@ -303,9 +293,8 @@ map<EFiRAP_longtime::ResourceKey, int> EFiRAP_longtime::calculate_memory_usage(
         }
     }
 
-    // Keep the current EFiRAP purification profile, but never release an extra
-    // cell after its first use. The running maximum is the number of distinct
-    // extra cells that have been activated by that point in the protocol.
+    // EFiRAP generates all sacrificial pairs simultaneously. Once generated,
+    // all of their memory cells stay occupied through the end of the horizon.
     for(size_t link = 0; link + 1 < shape_vector.size(); ++link) {
         int rounds = link < purify_rounds.size() ? purify_rounds[link] : 0;
         if(rounds <= 0) continue;
@@ -313,19 +302,9 @@ map<EFiRAP_longtime::ResourceKey, int> EFiRAP_longtime::calculate_memory_usage(
         int link_start = shape_vector[link].second.back().first;
         int left_node = shape_vector[link].first;
         int right_node = shape_vector[link + 1].first;
-        int retained_extra = 0;
-        for(int time = link_start; time <= last_time; ++time) {
-            int offset = time - link_start;
-            if(offset <= rounds + 1) {
-                int profile_index = rounds + 1 - offset;
-                int active_extra =
-                    PURIFICATION_MEMORY_PROFILE[rounds][profile_index] - 1;
-                retained_extra = max(retained_extra, active_extra);
-            }
-            if(retained_extra > 0) {
-                usage[{left_node, time}] += retained_extra;
-                usage[{right_node, time}] += retained_extra;
-            }
+        for(int t = link_start; t < time_limit; ++t) {
+            usage[{left_node, t}] += rounds;
+            usage[{right_node, t}] += rounds;
         }
     }
     return usage;
