@@ -17,6 +17,7 @@
 #include "Algorithm/WernerAlgo3/WernerAlgo3.h"
 #include "Algorithm/WernerAlgo_UB/WernerAlgo_UB.h"
 #include "Algorithm/EFiRAP/EFiRAP.h"
+#include "Algorithm/EFiRAP_longtime/EFiRAP_longtime.h"
 #include "Network/PathMethod/PathMethodBase/PathMethod.h"
 #include "Network/PathMethod/Greedy/Greedy.h"
 #include "Network/PathMethod/QCAST/QCAST.h"
@@ -1054,8 +1055,10 @@ int main(){
     vector<string> algo_names = {"ZFA_UB", "ZFA", "ZFA2", "MyAlgo1", "MyAlgo3"};
     if(EFiRAP::gurobi_available()) {
         algo_names.push_back("EFiRAP");
+        algo_names.push_back("EFiRAP_longtime");
     } else {
-        cerr << "[EFiRAP] Gurobi support is not enabled; skipping EFiRAP."
+        cerr << "[EFiRAP] Gurobi support is not enabled; skipping EFiRAP "
+             << "and EFiRAP_longtime."
              << endl;
     }
     // init result
@@ -1262,6 +1265,12 @@ int main(){
                         algorithms.emplace_back(new MyAlgo3(graph, requests, paths));
                         DBG_HERE("after new MyAlgo3");
                         DBG_mem("after_all_algos_ctor");
+                    }
+                    if(EFiRAP_longtime::gurobi_available()) {
+                        DBG_HERE("before new EFiRAP_longtime");
+                        algorithms.emplace_back(
+                            new EFiRAP_longtime(graph, requests, paths, 3));
+                        DBG_HERE("after new EFiRAP_longtime");
                     }
 
 

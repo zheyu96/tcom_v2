@@ -7,7 +7,8 @@ algorithm = Algorithm/MyAlgo1/MyAlgo1.o Algorithm/MyAlgo2/MyAlgo2.o Algorithm/My
             Algorithm/MyAlgo4/MyAlgo4.o Algorithm/MyAlgo5/MyAlgo5.o Algorithm/MyAlgo6/MyAlgo6.o \
             Algorithm/WernerAlgo/WernerAlgo.o Algorithm/WernerAlgo2/WernerAlgo2.o \
             Algorithm/WernerAlgo3/WernerAlgo3.o \
-            Algorithm/WernerAlgo_UB/WernerAlgo_UB.o Algorithm/EFiRAP/EFiRAP.o
+            Algorithm/WernerAlgo_UB/WernerAlgo_UB.o Algorithm/EFiRAP/EFiRAP.o \
+            Algorithm/EFiRAP_longtime/EFiRAP_longtime.o
 
 # 時間量測專用演算法物件
 algorithm_zfa = Algorithm/WernerAlgo_time/WernerAlgo_time.o 
@@ -39,7 +40,7 @@ else
 gurobi_flag =
 endif
 
-# Passing a non-empty gurobi_flag enables EFiRAP's Gurobi-backed EPS model.
+# Passing a non-empty gurobi_flag enables both EFiRAP Gurobi-backed EPS models.
 ifneq ($(strip $(gurobi_flag)),)
 efirap_gurobi_define = -DEFIRAP_USE_GUROBI
 else
@@ -110,6 +111,8 @@ Algorithm/WernerAlgo_UB/WernerAlgo_UB.o: Algorithm/WernerAlgo_UB/WernerAlgo_UB.c
 	g++ -c $(gcc_flag) Algorithm/WernerAlgo_UB/WernerAlgo_UB.cpp -o Algorithm/WernerAlgo_UB/WernerAlgo_UB.o
 Algorithm/EFiRAP/EFiRAP.o: Algorithm/EFiRAP/EFiRAP.cpp Algorithm/EFiRAP/EFiRAP.h Network/Purification/Purification.h config.h
 	g++ -c $(gcc_flag) $(efirap_gurobi_define) $(gurobi_flag) Algorithm/EFiRAP/EFiRAP.cpp -o Algorithm/EFiRAP/EFiRAP.o
+Algorithm/EFiRAP_longtime/EFiRAP_longtime.o: Algorithm/EFiRAP_longtime/EFiRAP_longtime.cpp Algorithm/EFiRAP_longtime/EFiRAP_longtime.h Network/Purification/Purification.h config.h
+	g++ -c $(gcc_flag) $(efirap_gurobi_define) $(gurobi_flag) Algorithm/EFiRAP_longtime/EFiRAP_longtime.cpp -o Algorithm/EFiRAP_longtime/EFiRAP_longtime.o
 
 # 時間量測版本演算法編譯規則
 Algorithm/WernerAlgo_time/WernerAlgo_time.o: Algorithm/WernerAlgo_time/WernerAlgo_time.cpp Algorithm/WernerAlgo_time/WernerAlgo_time.h config.h
