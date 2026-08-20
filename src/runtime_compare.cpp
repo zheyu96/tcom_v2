@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <streambuf>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -50,6 +51,13 @@ struct Config {
     int k_paths = 5;
     uint32_t request_seed = 20260820U;
     string python_command = "python3";
+    vector<double> epsilon_values{0.1, 0.3, 0.5, 0.7, 0.9};
+    vector<double> bucket_eps_values{0.00001, 0.0001, 0.001, 0.01, 0.1};
+    double fixed_epsilon = 0.5;
+    double fixed_bucket_eps = 0.0001;
+    bool parameter_sweep = false;
+    bool time_limits_explicit = false;
+    bool output_explicit = false;
     bool regenerate_inputs = true;
     bool quiet = false;
 };
@@ -64,9 +72,22 @@ struct Sample {
     int instance = 0;
     int repetition = 0;
     string algorithm;
+    string sweep_parameter;
+    double parameter_value = 0.0;
+    double epsilon = 0.0;
+    double bucket_eps = 0.0;
     double seconds = 0.0;
+    double expected_werner_sum = 0.0;
     double actual_requests = 0.0;
     double expected_requests = 0.0;
+};
+
+struct RunSpec {
+    string algorithm;
+    string sweep_parameter = "fixed";
+    double parameter_value = 0.0;
+    double epsilon = 0.5;
+    double bucket_eps = 0.0001;
 };
 
 class NullBuffer : public streambuf {
@@ -102,6 +123,34 @@ vector<int> parse_integer_list(const string& value, const string& option) {
     return result;
 }
 
+vector<double> parse_positive_double_list(
+    const string& value,
+    const string& option) {
+    vector<double> result;
+    for(const string& field : split(value, ',')) {
+        try {
+            size_t consumed = 0;
+            double parsed = stod(field, &consumed);
+            if(consumed != field.size() || !isfinite(parsed) || parsed <= 0.0)
+                throw invalid_argument("invalid value");
+            result.push_back(parsed);
+        } catch(const exception&) {
+            throw invalid_argument(
+                option + " expects comma-separated positive numbers: " + value);
+        }
+    }
+    if(result.empty()) throw invalid_argument(option + " cannot be empty");
+    return result;
+}
+
+double parse_positive_double(const string& value, const string& option) {
+    vector<double> parsed = parse_positive_double_list(value, option);
+    if(parsed.size() != 1 || value.find(',') != string::npos) {
+        throw invalid_argument(option + " expects one positive number: " + value);
+    }
+    return parsed.front();
+}
+
 string canonical_algorithm_name(string name) {
     transform(name.begin(), name.end(), name.begin(),
               [](unsigned char character) { return (char)tolower(character); });
@@ -133,6 +182,11 @@ void print_usage(const char* executable) {
         << "  --requests N           Prefix length from main's 200-request pool\n"
         << "  --seed N               Base graph/request seed (default: 20260820)\n"
         << "  --k-paths N            EFiRAP Yen path count (default: 5)\n"
+        << "  --wpfa-parameter-sweep Sweep epsilon and bucket_eps at T=13\n"
+        << "  --epsilon-values LIST  Sweep values (default: .1,.3,.5,.7,.9)\n"
+        << "  --bucket-eps-values L  Sweep values (default: 1e-5,...,1e-1)\n"
+        << "  --fixed-epsilon X      Epsilon during bucket_eps sweep (default: .5)\n"
+        << "  --fixed-bucket-eps X   Bucket width during epsilon sweep (default: 1e-4)\n"
         << "  --python COMMAND       Python command for graph_generator.py\n"
         << "  --reuse-inputs         Do not regenerate round_*.input files\n"
         << "  --quiet                Suppress algorithm stderr while benchmarking\n"
@@ -171,8 +225,10 @@ Config parse_arguments(int argc, char** argv) {
             config.request_file = require_value(index, option);
         } else if(option == "--output") {
             config.output_file = require_value(index, option);
+            config.output_explicit = true;
         } else if(option == "--time-limits") {
             config.time_limits = parse_integer_list(require_value(index, option), option);
+            config.time_limits_explicit = true;
         } else if(option == "--algorithms") {
             config.algorithms.clear();
             for(const string& name : split(require_value(index, option), ',')) {
@@ -206,6 +262,22 @@ Config parse_arguments(int argc, char** argv) {
             config.request_seed = (uint32_t)parsed;
         } else if(option == "--k-paths") {
             config.k_paths = parse_positive(require_value(index, option), option);
+        } else if(option == "--wpfa-parameter-sweep") {
+            config.parameter_sweep = true;
+        } else if(option == "--epsilon-values") {
+            config.epsilon_values = parse_positive_double_list(
+                require_value(index, option), option);
+            config.parameter_sweep = true;
+        } else if(option == "--bucket-eps-values") {
+            config.bucket_eps_values = parse_positive_double_list(
+                require_value(index, option), option);
+            config.parameter_sweep = true;
+        } else if(option == "--fixed-epsilon") {
+            config.fixed_epsilon = parse_positive_double(
+                require_value(index, option), option);
+        } else if(option == "--fixed-bucket-eps") {
+            config.fixed_bucket_eps = parse_positive_double(
+                require_value(index, option), option);
         } else if(option == "--python") {
             config.python_command = require_value(index, option);
         } else if(option == "--reuse-inputs") {
@@ -223,6 +295,12 @@ Config parse_arguments(int argc, char** argv) {
     if(config.request_file.empty() && config.request_count > 200) {
         throw invalid_argument(
             "--requests cannot exceed main.cpp's 200-request pool");
+    }
+    if(config.parameter_sweep) {
+        if(!config.time_limits_explicit) config.time_limits = {13};
+        if(!config.output_explicit) {
+            config.output_file = "../data/ans/wpfa_parameter_sweep.csv";
+        }
     }
     return config;
 }
@@ -304,23 +382,26 @@ map<SDpair, vector<Path>> build_paths(const Graph& graph,
 }
 
 unique_ptr<AlgorithmBase> make_algorithm(
-    const string& name,
+    const RunSpec& spec,
     const Graph& graph,
     const vector<SDpair>& requests,
     const map<SDpair, vector<Path>>& paths,
     int k_paths) {
-    if(name == "WPFA") {
-        return unique_ptr<AlgorithmBase>(new WernerAlgo2(graph, requests, paths));
+    if(spec.algorithm == "WPFA") {
+        unique_ptr<WernerAlgo2> algorithm(new WernerAlgo2(
+            graph, requests, paths, spec.epsilon, spec.bucket_eps));
+        algorithm->set_detailed_logging(false);
+        return algorithm;
     }
-    if(name == "EFiRAP") {
+    if(spec.algorithm == "EFiRAP") {
         return unique_ptr<AlgorithmBase>(
             new EFiRAP(graph, requests, paths, k_paths));
     }
-    if(name == "EFiRAP-time") {
+    if(spec.algorithm == "EFiRAP-time") {
         return unique_ptr<AlgorithmBase>(
             new EFiRAP_longtime(graph, requests, paths, k_paths));
     }
-    throw invalid_argument("unknown algorithm: " + name);
+    throw invalid_argument("unknown algorithm: " + spec.algorithm);
 }
 
 bool algorithm_available(const string& name) {
@@ -330,7 +411,38 @@ bool algorithm_available(const string& name) {
     return false;
 }
 
-Sample run_sample(const string& name,
+vector<RunSpec> build_run_specs(const Config& config) {
+    vector<RunSpec> specs;
+    if(config.parameter_sweep) {
+        for(double epsilon : config.epsilon_values) {
+            specs.push_back({
+                "WPFA", "epsilon", epsilon,
+                epsilon, config.fixed_bucket_eps});
+        }
+        for(double bucket_eps : config.bucket_eps_values) {
+            specs.push_back({
+                "WPFA", "bucket_eps", bucket_eps,
+                config.fixed_epsilon, bucket_eps});
+        }
+        return specs;
+    }
+
+    for(const string& algorithm : config.algorithms) {
+        RunSpec spec;
+        spec.algorithm = algorithm;
+        if(algorithm == "WPFA") {
+            spec.epsilon = config.fixed_epsilon;
+            spec.bucket_eps = config.fixed_bucket_eps;
+        } else {
+            spec.epsilon = 0.0;
+            spec.bucket_eps = 0.0;
+        }
+        specs.push_back(spec);
+    }
+    return specs;
+}
+
+Sample run_sample(const RunSpec& spec,
                   const Graph& graph,
                   const vector<SDpair>& requests,
                   const map<SDpair, vector<Path>>& paths,
@@ -339,7 +451,7 @@ Sample run_sample(const string& name,
                   int instance,
                   int repetition) {
     unique_ptr<AlgorithmBase> algorithm =
-        make_algorithm(name, graph, requests, paths, config.k_paths);
+        make_algorithm(spec, graph, requests, paths, config.k_paths);
 
     NullBuffer null_buffer;
     streambuf* original_buffer = nullptr;
@@ -359,8 +471,13 @@ Sample run_sample(const string& name,
     sample.time_limit = time_limit;
     sample.instance = instance;
     sample.repetition = repetition;
-    sample.algorithm = name;
+    sample.algorithm = spec.algorithm;
+    sample.sweep_parameter = spec.sweep_parameter;
+    sample.parameter_value = spec.parameter_value;
+    sample.epsilon = spec.epsilon;
+    sample.bucket_eps = spec.bucket_eps;
     sample.seconds = chrono::duration<double>(finish - start).count();
+    sample.expected_werner_sum = algorithm->get_res("fidelity_gain");
     sample.actual_requests = algorithm->get_res("actual_req_cnt");
     sample.expected_requests = algorithm->get_res("succ_request_cnt");
     return sample;
@@ -383,24 +500,30 @@ double median(vector<double> values) {
 }
 
 void write_summary(const string& filename, const vector<Sample>& samples) {
-    map<pair<int, string>, vector<const Sample*>> groups;
+    using SummaryKey = tuple<int, string, string, double, double, double>;
+    map<SummaryKey, vector<const Sample*>> groups;
     for(const Sample& sample : samples) {
-        groups[{sample.time_limit, sample.algorithm}].push_back(&sample);
+        groups[{sample.time_limit, sample.algorithm, sample.sweep_parameter,
+                sample.parameter_value, sample.epsilon, sample.bucket_eps}]
+            .push_back(&sample);
     }
 
     ofstream output(filename, ios::trunc);
     if(!output) throw runtime_error("cannot open summary output: " + filename);
-    output << "time_limit,algorithm,samples,mean_seconds,median_seconds,"
-              "stddev_seconds,min_seconds,max_seconds,mean_actual_requests,"
-              "mean_expected_requests\n";
+    output << "time_limit,algorithm,sweep_parameter,parameter_value,epsilon,"
+              "bucket_eps,samples,mean_seconds,median_seconds,stddev_seconds,"
+              "min_seconds,max_seconds,mean_expected_werner_sum,"
+              "mean_actual_requests,mean_expected_requests\n";
     output << fixed << setprecision(9);
 
     for(const auto& entry : groups) {
         vector<double> runtimes;
+        double werner_sum = 0.0;
         double actual_sum = 0.0;
         double expected_sum = 0.0;
         for(const Sample* sample : entry.second) {
             runtimes.push_back(sample->seconds);
+            werner_sum += sample->expected_werner_sum;
             actual_sum += sample->actual_requests;
             expected_sum += sample->expected_requests;
         }
@@ -414,10 +537,14 @@ void write_summary(const string& filename, const vector<Sample>& samples) {
         double standard_deviation = sqrt(squared_error / runtimes.size());
         auto minimum_and_maximum = minmax_element(runtimes.begin(), runtimes.end());
 
-        output << entry.first.first << ',' << entry.first.second << ','
+        const auto& [time_limit, algorithm, sweep_parameter, parameter_value,
+                     epsilon, bucket_eps] = entry.first;
+        output << time_limit << ',' << algorithm << ',' << sweep_parameter << ','
+               << parameter_value << ',' << epsilon << ',' << bucket_eps << ','
                << runtimes.size() << ',' << mean << ',' << median(runtimes) << ','
                << standard_deviation << ',' << *minimum_and_maximum.first << ','
                << *minimum_and_maximum.second << ','
+               << werner_sum / runtimes.size() << ','
                << actual_sum / runtimes.size() << ','
                << expected_sum / runtimes.size() << '\n';
     }
@@ -508,16 +635,16 @@ int main(int argc, char** argv) {
     try {
         Config config = parse_arguments(argc, argv);
 
-        vector<string> available_algorithms;
-        for(const string& name : config.algorithms) {
-            if(algorithm_available(name)) {
-                available_algorithms.push_back(name);
+        vector<RunSpec> run_specs;
+        for(const RunSpec& spec : build_run_specs(config)) {
+            if(algorithm_available(spec.algorithm)) {
+                run_specs.push_back(spec);
             } else {
-                cerr << "[runtime_compare] skipping " << name
+                cerr << "[runtime_compare] skipping " << spec.algorithm
                      << ": this binary was built without Gurobi support\n";
             }
         }
-        if(available_algorithms.empty()) {
+        if(run_specs.empty()) {
             throw runtime_error("none of the requested algorithms is available");
         }
 
@@ -528,8 +655,9 @@ int main(int argc, char** argv) {
         if(!raw_output) {
             throw runtime_error("cannot open raw output: " + config.output_file);
         }
-        raw_output << "time_limit,instance,repetition,algorithm,run_seconds,"
-                      "actual_requests,expected_requests\n";
+        raw_output << "time_limit,instance,repetition,algorithm,sweep_parameter,"
+                      "parameter_value,epsilon,bucket_eps,run_seconds,"
+                      "expected_werner_sum,actual_requests,expected_requests\n";
         raw_output << fixed << setprecision(9);
 
         vector<Sample> samples;
@@ -539,28 +667,53 @@ int main(int argc, char** argv) {
                 Graph graph = load_graph(workload.input_file, time_limit);
                 const vector<SDpair>& requests = workload.requests;
                 map<SDpair, vector<Path>> paths = build_paths(graph, requests);
+                map<tuple<string, double, double, int>, Sample> sample_cache;
 
-                for(const string& name : available_algorithms) {
+                for(const RunSpec& spec : run_specs) {
                     for(int warmup = 0; warmup < config.warmups; ++warmup) {
-                        (void)run_sample(name, graph, requests, paths, config,
+                        (void)run_sample(spec, graph, requests, paths, config,
                                          time_limit, instance, -1 - warmup);
                     }
                     for(int repetition = 0;
                         repetition < config.repetitions;
                         ++repetition) {
-                        Sample sample = run_sample(
-                            name, graph, requests, paths, config,
-                            time_limit, instance, repetition);
+                        const auto cache_key = make_tuple(
+                            spec.algorithm, spec.epsilon,
+                            spec.bucket_eps, repetition);
+                        const auto cached = sample_cache.find(cache_key);
+                        const bool reused = cached != sample_cache.end();
+                        Sample sample;
+                        if(reused) {
+                            sample = cached->second;
+                            sample.sweep_parameter = spec.sweep_parameter;
+                            sample.parameter_value = spec.parameter_value;
+                        } else {
+                            sample = run_sample(
+                                spec, graph, requests, paths, config,
+                                time_limit, instance, repetition);
+                            sample_cache[cache_key] = sample;
+                        }
                         samples.push_back(sample);
                         raw_output << sample.time_limit << ',' << sample.instance << ','
                                    << sample.repetition << ',' << sample.algorithm << ','
-                                   << sample.seconds << ',' << sample.actual_requests << ','
+                                   << sample.sweep_parameter << ','
+                                   << sample.parameter_value << ','
+                                   << sample.epsilon << ',' << sample.bucket_eps << ','
+                                   << sample.seconds << ','
+                                   << sample.expected_werner_sum << ','
+                                   << sample.actual_requests << ','
                                    << sample.expected_requests << '\n';
                         raw_output.flush();
                         cout << "[runtime_compare] T=" << time_limit
                              << " instance=" << instance
                              << " repetition=" << repetition
-                             << " algorithm=" << name
+                             << " algorithm=" << spec.algorithm;
+                        if(config.parameter_sweep) {
+                            cout << " " << spec.sweep_parameter << '='
+                                 << spec.parameter_value;
+                        }
+                        if(reused) cout << " (reused identical setting)";
+                        cout
                              << " seconds=" << fixed << setprecision(6)
                              << sample.seconds << '\n';
                     }

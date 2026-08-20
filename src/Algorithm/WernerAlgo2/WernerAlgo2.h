@@ -38,6 +38,7 @@ public:
 
     void run();
     void set_experiment_label(const string& label) { experiment_label = label; }
+    void set_detailed_logging(bool enabled) { detailed_logging = enabled; }
 
 private:
     // ===== Werner DP Label =====
@@ -66,6 +67,7 @@ private:
     // ===== 參數 / 對偶變數（風格比照 MyAlgo1） =====
     double epsilon = 0.5;  // 原 0.35，加大加速收斂（近似比從 1.35 變 1.5）
     double bucket_eps = -1.0;
+    bool detailed_logging = true;
     double obj = 0.0;
     vector<double> alpha;                 // 每個 request 的 dual
     vector<vector<double>> beta;          // beta[v][t]：節點-時間 dual
