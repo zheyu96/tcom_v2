@@ -114,7 +114,7 @@ class ChartGenerator:
     _FONT_SIZE_BASE = 30
 
     _RIGHT_TOP  = (0.6, 0.85)
-    _LEFT_TOP   = (0.35, 0.85)
+    _LEFT_TOP   = (0.45, 0.85)
     _RIGHT_DOWN = (0.60, 0.13)
     _LEFT_DOWN  = (0.40, 0.13)
 
@@ -158,17 +158,17 @@ class ChartGenerator:
 
     _Y_INTERVALS = {
         'fidelity_gain':{
-            'request_cnt': (30, 100, 5, 2), 'tao': (20, 60, 5, 2),
-            'time_limit': (30, 55, 5, 1), 'avg_memory': (0, 30, 5, 2),
-            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 85, 5, 4),
-            'swap_prob': (20, 55, 5, 1), 'entangle_time': "auto",
+            'request_cnt': (30, 120, 5, 6), 'tao': (0, 85, 5, 4),
+            'time_limit': (20, 80, 5, 4), 'avg_memory': (20, 80, 5, 4),
+            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 90, 5, 6),
+            'swap_prob': (10, 70, 5, 2), 'entangle_time': "auto",
             'hop_count':(10,90,5,3),
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'succ_request_cnt':{
-            'request_cnt': (40, 140, 5, 4), 'tao': (40, 55, 5, 1),
-            'time_limit': (45, 60, 5, 1), 'avg_memory': (0, 45, 5, 3),
-            'min_fidelity': (65, 95, 5, 1), 'fidelity_threshold': (15, 40, 5, 1),
+            'request_cnt': (40, 140, 5, 4), 'tao': (0, 90, 5, 6),
+            'time_limit': (45, 60, 5, 1), 'avg_memory': (40, 80, 5, 4),
+            'min_fidelity': (65, 95, 5, 1), 'fidelity_threshold': (0, 90, 5, 6),
             'swap_prob': (25, 70, 5, 1), 'hop_count':(20,105,5,7),
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
@@ -182,10 +182,10 @@ class ChartGenerator:
             'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'actual_req_cnt':{
-            'request_cnt': (40,165,5,8), 'tao': (45,65,5,1),
-            'time_limit': (50,75,5,1), 'avg_memory': (10,80,5,2),
-            'min_fidelity': "auto", 'fidelity_threshold': (25,85,5,1),
-            'swap_prob': (50,75,5,1), 'hop_count': "auto",
+            'request_cnt': (40,165,5,8), 'tao': (0,120,5,4),
+            'time_limit': (50,75,5,1), 'avg_memory': (50,100,5,5),
+            'min_fidelity': "auto", 'fidelity_threshold': (0,85,5,4),
+            'swap_prob': (50,100,5,5), 'hop_count': "auto",
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
@@ -215,13 +215,17 @@ class ChartGenerator:
     # 欄位順序與 main.cpp 相同：
     # ZFA_UB=WernerAlgo3, ZFA=WernerAlgo, ZFA2=WernerAlgo2,
     # MyAlgo1=MyAlgo1, MyAlgo3=MyAlgo3, EFiRAP=EFiRAP,
-    # EFiRAP_longtime=EFiRAP-time
+    # EFiRAP_longtime=EFiRAP-long
+    # Column order written by main.cpp's algo_names:
+    # ZFA_UB -> UB, ZFA -> WPFA-noPurify, ZFA2 -> WPFA,
+    # MyAlgo1 -> FNPR, MyAlgo3 -> FLTO, EFiRAP -> EFiRAP,
+    # EFiRAP_longtime -> EFiRAP-long.
     _ALGO_NAMES = [
         "UB", "WPFA-noPurify", "WPFA", "FNPR", "FLTO", "EFiRAP",
-        "EFiRAP-time",
+        "EFiRAP-long",
     ]
 
-    # 保持資料欄位順序，EFiRAP-time 是 main.cpp 輸出的最後一個演算法。
+    # 保持資料欄位順序，EFiRAP-long 是 main.cpp 輸出的最後一個演算法。
     _DRAW_ORDER = [0, 1, 2, 3, 4, 5, 6]
 
     # 保持原本各欄位使用的 marker 與顏色。
@@ -273,7 +277,31 @@ class ChartGenerator:
             return
 
         num_algos = num_cols - 1
+        if num_algos > len(self._ALGO_NAMES):
+            print(
+                f"[WARN] data has {num_algos} algorithm columns, but only "
+                f"{len(self._ALGO_NAMES)} names are configured."
+            )
+            return
+
         y = np.array(y_vals).reshape(num_rows, num_algos).T.tolist()
+
+        def should_draw_algorithm(i: int) -> bool:
+            name = self._ALGO_NAMES[i]
+            if name in self._SKIP_ALGOS:
+                return False
+            if x_key in self._ONLY_WERNER_X and name != "G-Werner":
+                return False
+            # UB is not a schedulable algorithm, so its request counts and
+            # execution time are not part of those comparison figures.
+            if y_key in ("succ_request_cnt", "actual_req_cnt", "runtime") and name == "UB":
+                return False
+            return True
+
+        visible_indices = [i for i in range(num_algos) if should_draw_algorithm(i)]
+        if not visible_indices:
+            print(f"[WARN] no algorithms selected for x={x_key}, y={y_key}.")
+            return
 
         # X 軸處理
         Xpow = -3 if x_key in ("tao", "entangle_time", "entangle_prob") else 0
@@ -289,7 +317,7 @@ class ChartGenerator:
             x_labels = [str(v) for v in x_vals]
 
         # Y 軸處理
-        raw_max = max(max(row) for row in y)
+        raw_max = max(max(y[i]) for i in visible_indices)
         Ypow = self._pick_engineering_exp(abs(raw_max))
         Ydiv = float(10 ** Ypow) if Ypow != 0 else 1.0
 
@@ -297,8 +325,9 @@ class ChartGenerator:
         for i in range(num_algos):
             for j in range(num_rows):
                 y[i][j] = y[i][j] / Ydiv
-                max_data = max(max_data, y[i][j])
-                min_data = min(min_data, y[i][j])
+                if i in visible_indices:
+                    max_data = max(max_data, y[i][j])
+                    min_data = min(min_data, y[i][j])
 
         # 畫圖
         fig, ax1 = plt.subplots(figsize=(6.8, 5.4), dpi=600, constrained_layout=True)
@@ -320,7 +349,7 @@ class ChartGenerator:
                 continue
             
             # 針對 succ_request_cnt / actual_req_cnt，隱藏所有結尾是 UB 的項目
-            if y_key in ("succ_request_cnt", "actual_req_cnt") and self._ALGO_NAMES[i].endswith("UB"):
+            if y_key in ("succ_request_cnt", "actual_req_cnt", "runtime") and self._ALGO_NAMES[i].endswith("UB"):
                 continue
 
             ax1.plot(
@@ -344,7 +373,7 @@ class ChartGenerator:
             if x_key in self._ONLY_WERNER_X and self._ALGO_NAMES[i] != "G-Werner":
                 continue
             
-            if y_key in ("succ_request_cnt", "actual_req_cnt") and self._ALGO_NAMES[i].endswith("UB"):
+            if y_key in ("succ_request_cnt", "actual_req_cnt", "runtime") and self._ALGO_NAMES[i].endswith("UB"):
                 continue
 
             legend_names.append(self._ALGO_NAMES[i])
@@ -468,7 +497,8 @@ if __name__ == "__main__":
 
     Xlabels = [
         "request_cnt", "time_limit", "tao",
-        "avg_memory", "fidelity_threshold", "min_fidelity","hop_count",
+        "avg_memory", "fidelity_threshold", "min_fidelity", "hop_count",
+        "swap_prob",
     ]
     Ylabels = [
         "fidelity_gain", "succ_request_cnt", "pure_fidelity",

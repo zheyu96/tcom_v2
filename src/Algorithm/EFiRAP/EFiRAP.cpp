@@ -1,8 +1,6 @@
 #include "EFiRAP.h"
 
 #include <cmath>
-#include <limits>
-#include <queue>
 #include <stdexcept>
 #include <tuple>
 
@@ -15,35 +13,21 @@
 
 namespace {
 
-constexpr double DIJKSTRA_EPS = 1e-12;
 constexpr double MARGINAL_TIE_EPS = 1e-10;
 constexpr int MAX_PURIFICATION_ROUNDS = 3;
-
-bool has_prefix(const Path& path, const Path& prefix) {
-    if(path.size() < prefix.size()) return false;
-    for(size_t i = 0; i < prefix.size(); ++i) {
-        if(path[i] != prefix[i]) return false;
-    }
-    return true;
-}
 
 } // namespace
 
 EFiRAP::EFiRAP(const Graph& graph,
                const vector<SDpair>& requests,
                const map<SDpair, vector<Path>>& paths,
-               int k_paths,
                double approximation_epsilon,
                double solver_time_limit_seconds,
                long long enumeration_state_limit)
     : AlgorithmBase(graph, requests, paths),
-      k_paths(k_paths),
       approximation_epsilon(approximation_epsilon),
       solver_time_limit_seconds(solver_time_limit_seconds),
       enumeration_state_limit(enumeration_state_limit) {
-    if(k_paths <= 0) {
-        throw invalid_argument("EFiRAP requires k_paths > 0");
-    }
     if(approximation_epsilon <= 0.0 || approximation_epsilon >= 1.0) {
         throw invalid_argument(
             "EFiRAP requires 0 < approximation_epsilon < 1");
@@ -79,134 +63,10 @@ void EFiRAP::build_request_groups() {
         RequestGroup group;
         group.sd = entry.first;
         group.demand = entry.second;
-        group.yen_paths = yen_k_shortest_paths(
-            group.sd.first, group.sd.second, k_paths);
+        const auto path_it = paths.find(group.sd);
+        if(path_it != paths.end()) group.shared_paths = path_it->second;
         request_groups.push_back(group);
     }
-}
-
-double EFiRAP::path_cost(const Path& path) {
-    if(path.size() < 2) return numeric_limits<double>::infinity();
-
-    double result = 0.0;
-    for(size_t i = 1; i < path.size(); ++i) {
-        double fidelity = graph.get_F_init(path[i - 1], path[i]);
-        result -= log(max(fidelity, 1e-15));
-    }
-    return result;
-}
-
-Path EFiRAP::shortest_path(
-    int src,
-    int dst,
-    const set<int>& banned_nodes,
-    const set<pair<int, int>>& banned_edges) {
-    const int node_count = graph.get_num_nodes();
-    if(src < 0 || src >= node_count || dst < 0 || dst >= node_count) return {};
-    if(banned_nodes.count(src) || banned_nodes.count(dst)) return {};
-
-    vector<double> distance(node_count, numeric_limits<double>::infinity());
-    vector<int> parent(node_count, -1);
-    vector<bool> settled(node_count, false);
-    using QueueItem = pair<double, int>;
-    priority_queue<QueueItem, vector<QueueItem>, greater<QueueItem>> queue;
-
-    distance[src] = 0.0;
-    queue.push({0.0, src});
-
-    while(!queue.empty()) {
-        double current_distance = queue.top().first;
-        int current = queue.top().second;
-        queue.pop();
-
-        if(current_distance > distance[current] + DIJKSTRA_EPS) continue;
-        if(settled[current]) continue;
-        settled[current] = true;
-        if(current == dst) break;
-
-        for(int next : graph.adj_list[current]) {
-            if(banned_nodes.count(next)) continue;
-            if(banned_edges.count({current, next})) continue;
-            if(settled[next]) continue;
-
-            double fidelity = graph.get_F_init(current, next);
-            double weight = -log(max(fidelity, 1e-15));
-            double candidate_distance = current_distance + weight;
-
-            bool strictly_better = candidate_distance + DIJKSTRA_EPS < distance[next];
-            bool tie_with_better_parent =
-                fabs(candidate_distance - distance[next]) <= DIJKSTRA_EPS &&
-                (parent[next] == -1 || current < parent[next]);
-            if(strictly_better || tie_with_better_parent) {
-                distance[next] = candidate_distance;
-                parent[next] = current;
-                queue.push({candidate_distance, next});
-            }
-        }
-    }
-
-    if(!isfinite(distance[dst])) return {};
-
-    Path path;
-    int steps = 0;
-    for(int current = dst; current != -1; current = parent[current]) {
-        path.push_back(current);
-        if(++steps > node_count) return {};
-    }
-    reverse(path.begin(), path.end());
-    if(path.empty() || path.front() != src) return {};
-    return path;
-}
-
-vector<Path> EFiRAP::yen_k_shortest_paths(int src, int dst, int K) {
-    vector<Path> accepted;
-    Path first = shortest_path(src, dst, {}, {});
-    if(first.empty()) return accepted;
-
-    accepted.push_back(first);
-    set<Path> accepted_set{first};
-
-    using PathCandidate = pair<double, Path>;
-    priority_queue<PathCandidate, vector<PathCandidate>, greater<PathCandidate>> pool;
-    set<Path> pooled_paths;
-
-    while((int)accepted.size() < K) {
-        const Path& previous = accepted.back();
-        for(size_t spur_index = 0; spur_index + 1 < previous.size(); ++spur_index) {
-            Path root(previous.begin(), previous.begin() + spur_index + 1);
-            set<pair<int, int>> banned_edges;
-            set<int> banned_nodes;
-
-            for(const Path& chosen : accepted) {
-                if(chosen.size() > spur_index + 1 && has_prefix(chosen, root)) {
-                    banned_edges.insert({chosen[spur_index], chosen[spur_index + 1]});
-                }
-            }
-            for(size_t i = 0; i + 1 < root.size(); ++i) {
-                banned_nodes.insert(root[i]);
-            }
-
-            Path spur = shortest_path(root.back(), dst, banned_nodes, banned_edges);
-            if(spur.empty()) continue;
-
-            Path total = root;
-            total.pop_back();
-            total.insert(total.end(), spur.begin(), spur.end());
-            if(accepted_set.count(total) || pooled_paths.count(total)) continue;
-
-            pool.push({path_cost(total), total});
-            pooled_paths.insert(total);
-        }
-
-        if(pool.empty()) break;
-        Path next = pool.top().second;
-        pool.pop();
-        pooled_paths.erase(next);
-        accepted.push_back(next);
-        accepted_set.insert(next);
-    }
-
-    return accepted;
 }
 
 int EFiRAP::assign_balanced_swap_times(
@@ -401,7 +261,7 @@ void EFiRAP::prepare_candidates() {
     candidates.resize(request_groups.size());
 
     for(size_t group_index = 0; group_index < request_groups.size(); ++group_index) {
-        for(const Path& path : request_groups[group_index].yen_paths) {
+        for(const Path& path : request_groups[group_index].shared_paths) {
             vector<PurificationScheme> schemes = prepare_path_schemes(path);
             if(schemes.empty()) continue;
 
@@ -825,8 +685,7 @@ void EFiRAP::reserve_candidate(const Candidate& candidate) {
 }
 
 void EFiRAP::run() {
-    cerr << "[" << algorithm_name << "] start (Yen K=" << k_paths << ")"
-         << endl;
+    cerr << "[" << algorithm_name << "] start (shared path set)" << endl;
 
     build_request_groups();
     prepare_candidates();
@@ -834,7 +693,7 @@ void EFiRAP::run() {
     int path_count = 0;
     int candidate_count = 0;
     for(const RequestGroup& group : request_groups) {
-        path_count += (int)group.yen_paths.size();
+        path_count += (int)group.shared_paths.size();
     }
     for(const vector<Candidate>& group_candidates : candidates) {
         candidate_count += (int)group_candidates.size();

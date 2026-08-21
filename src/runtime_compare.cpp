@@ -48,7 +48,6 @@ struct Config {
     int repetitions = 1;
     int warmups = 0;
     int request_count = 80;
-    int k_paths = 5;
     uint32_t request_seed = 20260820U;
     string python_command = "python3";
     vector<double> epsilon_values{0.1, 0.3, 0.5, 0.7, 0.9};
@@ -181,7 +180,6 @@ void print_usage(const char* executable) {
         << "  --warmups N            Untimed runs before samples (default: 0)\n"
         << "  --requests N           Prefix length from main's 200-request pool\n"
         << "  --seed N               Base graph/request seed (default: 20260820)\n"
-        << "  --k-paths N            EFiRAP Yen path count (default: 5)\n"
         << "  --wpfa-parameter-sweep Sweep epsilon and bucket_eps at T=13\n"
         << "  --epsilon-values LIST  Sweep values (default: .1,.3,.5,.7,.9)\n"
         << "  --bucket-eps-values L  Sweep values (default: 1e-5,...,1e-1)\n"
@@ -260,8 +258,6 @@ Config parse_arguments(int argc, char** argv) {
                 throw invalid_argument(option + " has an invalid value: " + value);
             }
             config.request_seed = (uint32_t)parsed;
-        } else if(option == "--k-paths") {
-            config.k_paths = parse_positive(require_value(index, option), option);
         } else if(option == "--wpfa-parameter-sweep") {
             config.parameter_sweep = true;
         } else if(option == "--epsilon-values") {
@@ -385,8 +381,7 @@ unique_ptr<AlgorithmBase> make_algorithm(
     const RunSpec& spec,
     const Graph& graph,
     const vector<SDpair>& requests,
-    const map<SDpair, vector<Path>>& paths,
-    int k_paths) {
+    const map<SDpair, vector<Path>>& paths) {
     if(spec.algorithm == "WPFA") {
         unique_ptr<WernerAlgo2> algorithm(new WernerAlgo2(
             graph, requests, paths, spec.epsilon, spec.bucket_eps));
@@ -395,11 +390,11 @@ unique_ptr<AlgorithmBase> make_algorithm(
     }
     if(spec.algorithm == "EFiRAP") {
         return unique_ptr<AlgorithmBase>(
-            new EFiRAP(graph, requests, paths, k_paths));
+            new EFiRAP(graph, requests, paths));
     }
     if(spec.algorithm == "EFiRAP-time") {
         return unique_ptr<AlgorithmBase>(
-            new EFiRAP_longtime(graph, requests, paths, k_paths));
+            new EFiRAP_longtime(graph, requests, paths));
     }
     throw invalid_argument("unknown algorithm: " + spec.algorithm);
 }
@@ -451,7 +446,7 @@ Sample run_sample(const RunSpec& spec,
                   int instance,
                   int repetition) {
     unique_ptr<AlgorithmBase> algorithm =
-        make_algorithm(spec, graph, requests, paths, config.k_paths);
+        make_algorithm(spec, graph, requests, paths);
 
     NullBuffer null_buffer;
     streambuf* original_buffer = nullptr;

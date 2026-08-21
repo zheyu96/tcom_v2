@@ -26,13 +26,14 @@ using namespace std;
  * EFiRAP_longtime adapted to this simulator's physical model.
  *
  * Paper components retained:
- *   - EPP uses Yen's K-shortest paths with link weight -log(F_l).
  *   - Purification repeatedly selects the link with the largest marginal
  *     end-to-end fidelity gain and preserves all exact-tie branches.
  *   - EPS maximizes the number of admitted connections under resource
  *     constraints.
  *
  * Confirmed simulator adaptations:
+ *   - Candidate paths are the shared path set supplied by the experiment,
+ *     exactly matching the paths available to the other algorithms.
  *   - End-to-end fidelity and purification are evaluated by Shape and the
  *     project's Werner/decoherence model, not the paper's bit-flip model.
  *   - There is no independent link-capacity constraint. One primary Bell
@@ -50,7 +51,6 @@ public:
     EFiRAP_longtime(const Graph& graph,
            const vector<SDpair>& requests,
            const map<SDpair, vector<Path>>& paths,
-           int k_paths = 10,
            double approximation_epsilon = 0.5,
            double solver_time_limit_seconds = 0.0,
            long long enumeration_state_limit = 100000);
@@ -66,7 +66,7 @@ private:
     struct RequestGroup {
         SDpair sd;
         int demand = 0;
-        vector<Path> yen_paths;
+        vector<Path> shared_paths;
     };
 
     struct Candidate {
@@ -84,7 +84,6 @@ private:
         double fidelity = 0.0;
     };
 
-    int k_paths;
     double approximation_epsilon;
     double solver_time_limit_seconds;
     // Algorithm 2 is exponential. The paper explicitly permits trying only a
@@ -97,13 +96,6 @@ private:
 
     void build_request_groups();
     void prepare_candidates();
-
-    vector<Path> yen_k_shortest_paths(int src, int dst, int K);
-    Path shortest_path(int src,
-                       int dst,
-                       const set<int>& banned_nodes,
-                       const set<pair<int, int>>& banned_edges);
-    double path_cost(const Path& path);
 
     int assign_balanced_swap_times(int left,
                                    int right,
