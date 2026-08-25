@@ -51,7 +51,7 @@ public:
            const map<SDpair, vector<Path>>& paths,
            double approximation_epsilon = 0.5,
            double solver_time_limit_seconds = 0.0,
-           long long enumeration_state_limit = 0);
+           long long enumeration_state_limit = 100000000000);
 
     void run() override;
 
