@@ -31,7 +31,7 @@ public:
     WernerAlgo2(const Graph& graph,
                const vector<pair<int,int>>& requests,
                const map<SDpair, vector<Path>>& paths,
-               double epsilon = 0.5,
+               double epsilon = 0.55,
                // WPFA uses finer Z/P buckets than the shared graph default.
                // Runtime experiments can still override this explicitly.
                double bucket_eps = 0.01);
