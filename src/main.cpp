@@ -414,7 +414,7 @@ int main(){
     default_setting["Zmin"]=0.02702867239;
     // Shared default for the other Werner algorithms; WPFA supplies its finer
     // default through WernerAlgo2's constructor.
-    default_setting["bucket_eps"]=0.001;
+    default_setting["bucket_eps"]=0.01;
     default_setting["time_eta"]=0.001;
     // The default workload itself is stratified below.  hop_count is only the
     // requested distance in the dedicated hop_count experiment.
