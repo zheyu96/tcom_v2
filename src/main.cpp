@@ -402,6 +402,9 @@ int main(){
     // Node memory is avg_memory plus a discrete-uniform offset in
     // [-mem_vary, +mem_vary].  A value of 1 preserves the old distribution.
     default_setting["mem_vary"] = 1;
+    // topo_vary: 0=Waxman (default), 1=Grid, 2=RGG.  This setting is only
+    // consumed by the dedicated topo_vary experiment.
+    default_setting["topo_vary"] = 0;
     default_setting["tao"] = 0.002;
     default_setting["path_length"] = 3;
     // With threshold 0.8, max_fidelity=0.99 leaves a controlled set of
@@ -436,6 +439,7 @@ int main(){
     change_parameter["min_fidelity"] = {0.6, 0.7, 0.8, 0.9, 0.95};
     change_parameter["avg_memory"] = {4, 6, 8, 10, 12, 16, 20};
     change_parameter["mem_vary"] = {1, 2, 3, 4, 5};
+    change_parameter["topo_vary"] = {0, 1, 2};
     change_parameter["tao"] = {0.001,0.002,0.003,0.004,0.005};
     change_parameter["path_length"] = {3, 6, 9, 12, 15};
     change_parameter["swap_prob"] = {0.6, 0.7, 0.8, 0.9,0.95};
@@ -536,11 +540,14 @@ int main(){
 
     // vector<string> X_names = {"time_limit", "request_cnt", "num_nodes", "avg_memory", "tao"};
     //vector<string> X_names = {"request_cnt"};
-    vector<string> X_names = { /* "request_cnt", "time_limit", "tao",  */"mem_vary"/* ,  "fidelity_threshold" , "avg_memory","hop_count","swap_prob"  */ };
+    vector<string> X_names = { /* "request_cnt", "time_limit", "tao", "mem_vary", */ "topo_vary"/* ,  "fidelity_threshold" , "avg_memory","hop_count","swap_prob"  */ };
     // Set EXPERIMENT_X_NAME (for example, EXPERIMENT_X_NAME=tao) to rerun a
     // single sweep without truncating or recomputing the other result files.
     if(const char* selected_x = std::getenv("EXPERIMENT_X_NAME")) {
-        const string selected_name(selected_x);
+        string selected_name(selected_x);
+        // Accept the fully spelled alias used in experiment notes while
+        // keeping topo_vary as the canonical result-file name.
+        if(selected_name == "topology_vary") selected_name = "topo_vary";
         if(change_parameter.find(selected_name) == change_parameter.end()) {
             cerr << "Unknown EXPERIMENT_X_NAME: " << selected_name << endl;
             return 2;
@@ -619,6 +626,7 @@ int main(){
                     cerr << "[CKPT] === ROUND " << r << " START | X=" << X_name << " val=" << change_value << " ===" << endl;
                     DBG_mem("round_start");
                     string filename = file_path + "input/round_" + to_string(r) + ".input";
+                    string topology_model = "waxman";
                     if(X_name == "mem_vary") {
                         const int mem_vary = (int)input_parameter["mem_vary"];
                         const int num_nodes = (int)default_setting["num_nodes"];
@@ -635,6 +643,38 @@ int main(){
                             throw runtime_error(
                                 "graph_generator.py failed for mem_vary="
                                 + to_string(mem_vary));
+                        }
+                    } else if(X_name == "topo_vary") {
+                        static const vector<string> topology_models = {
+                            "waxman", "grid", "rgg"
+                        };
+                        const int topology_index =
+                            (int)input_parameter["topo_vary"];
+                        if(topology_index < 0 ||
+                           topology_index >= (int)topology_models.size()) {
+                            throw runtime_error(
+                                "invalid topo_vary index "
+                                + to_string(topology_index));
+                        }
+                        topology_model = topology_models[topology_index];
+                        const int num_nodes =
+                            (int)default_setting["num_nodes"];
+                        const int mem_vary =
+                            (int)default_setting["mem_vary"];
+                        const unsigned int experiment_seed =
+                            (unsigned int)default_setting["request_seed"] + r;
+                        filename = file_path + "input/round_" + to_string(r)
+                                 + "_topo_vary_" + topology_model + ".input";
+                        string command = "python3 graph_generator.py ";
+                        string parameter = to_string(num_nodes) + " "
+                                         + to_string(experiment_seed) + " "
+                                         + to_string(mem_vary) + " "
+                                         + topology_model;
+                        cerr << (command + filename + " " + parameter) << endl;
+                        if(system((command + filename + " " + parameter).c_str()) != 0) {
+                            throw runtime_error(
+                                "graph_generator.py failed for topo_vary="
+                                + topology_model);
                         }
                     }
                     ofstream ofs;
@@ -655,17 +695,50 @@ int main(){
                     DBG_mem("after_graph");
 
                     ofs << "--------------- in round " << r << " -------------" <<endl;
+                    vector<SDpair> topology_requests;
+                    if(X_name == "topo_vary") {
+                        RequestGenerationConfig request_config;
+                        request_config.minimum_hops =
+                            (int)default_setting["request_min_hops"];
+                        request_config.maximum_hops =
+                            (int)default_setting["request_max_hops"];
+                        request_config.hotspot_node_limit =
+                            (int)default_setting["request_hotspot_node_limit"];
+                        request_config.hotspot_candidate_limit =
+                            (int)default_setting["request_hotspot_candidate_limit"];
+                        request_config.minimum_repetitions =
+                            (int)default_setting["request_repeat_min"];
+                        request_config.maximum_repetitions =
+                            (int)default_setting["request_repeat_max"];
+                        request_config.random_seed =
+                            (unsigned int)default_setting["request_seed"] + r;
+                        const int total_cnt = 200;
+                        topology_requests = generate_stratified_requests(
+                            graph, total_cnt, request_config);
+                        if(topology_requests.empty()) {
+                            throw runtime_error(
+                                "no requests generated for topology "
+                                + topology_model);
+                        }
+                        cerr << "[topo_vary] model=" << topology_model
+                             << " request_pool=" << topology_requests.size()
+                             << endl;
+                    }
                     vector<pair<int, int>> requests;
                     if(X_name != "hop_count"){
+                        const vector<SDpair>& request_pool =
+                            X_name == "topo_vary"
+                                ? topology_requests
+                                : default_requests[r];
                         int idx=0;
                         for(int i = 0; i < request_cnt; i++) {
-                            /* while(graph.get_ini_fid(default_requests[r][idx].first,default_requests[r][idx].second)<fidelity_threshold){
-                                idx=(idx+1)%default_requests[r].size();
+                            /* while(graph.get_ini_fid(request_pool[idx].first,request_pool[idx].second)<fidelity_threshold){
+                                idx=(idx+1)%request_pool.size();
                             } */
-                            requests.emplace_back(default_requests[r][idx]);
-                            idx=(idx+1)%default_requests[r].size();
+                            requests.emplace_back(request_pool[idx]);
+                            idx=(idx+1)%request_pool.size();
                         }
-                        DBG_HERE("requests filled from default_requests");
+                        DBG_HERE("requests filled from selected request pool");
                     }
                     else{
                         DBG_HERE("before exact-hop request generation");
