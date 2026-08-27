@@ -170,8 +170,8 @@ class ChartGenerator:
         'fidelity_gain':{
             'request_cnt': (20, 120, 5, 4),
             'tao': (0, 90, 5, 6), 'time_limit': (20, 80, 5, 4),
-            'avg_memory': (20, 80, 5, 4), 'mem_vary': "auto",
-            'topo_vary': "auto",
+            'avg_memory': (20, 80, 5, 4), 'mem_vary': (30,90,5,6),
+            'topo_vary': (0,90,5,4),
             'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 95, 5, 6),
             'swap_prob': (10, 80, 5, 4), 'entangle_time': "auto",
             'hop_count':(10,90,5,3),
@@ -199,8 +199,8 @@ class ChartGenerator:
         'actual_req_cnt':{
             'request_cnt': (40,165,5,8),
             'tao': (0,130,5,6), 'time_limit': (50,110,5,5),
-            'avg_memory': (35,115,5,7), 'mem_vary': "auto",
-            'topo_vary': "auto",
+            'avg_memory': (35,115,5,7), 'mem_vary': (40,110,5,4),
+            'topo_vary': (0,120,5,4),
             'min_fidelity': "auto", 'fidelity_threshold': (0,125,5,5),
             'swap_prob': (50,100,5,5), 'hop_count': "auto",
             'entangle_time': "auto",
@@ -251,6 +251,7 @@ class ChartGenerator:
     # 保持原本各欄位使用的 marker 與顏色。
     _MARKERS = ['s', '*', 's', 'v', 'o', '^', 'x', '1', 'D']
     _COLORS = ["#800080", "#FF0000", "#0000FF", "#01C501", "#800080", "#FF00FF", "#00FFFF", "#808080", "#555555"]
+    _HATCHES = ['', '//', '\\\\', 'xx', '..', '++', 'oo', '--', '**']
 
     _SKIP_ALGOS = ["Nesting", "Linear", "ASAP"]
 
@@ -369,6 +370,13 @@ class ChartGenerator:
         fig, ax1 = plt.subplots(figsize=(6.8, 5.4), dpi=600, constrained_layout=True)
         ax1.tick_params(direction="in", bottom=True, top=True, left=True, right=True, pad=10)
 
+        is_topology_bar = x_key in ("topo_vary", "topology_vary")
+        x_positions = np.arange(len(x_labels), dtype=float)
+        topology_bar_count = len([
+            i for i in self._DRAW_ORDER
+            if i < num_algos and should_draw_algorithm(i)
+        ])
+        topology_bar_index = 0
         plotted = []
         for draw_idx in range(min(10, num_algos)):
             if draw_idx >= len(self._DRAW_ORDER):
@@ -388,12 +396,26 @@ class ChartGenerator:
             if y_key in ("succ_request_cnt", "actual_req_cnt", "runtime") and self._ALGO_NAMES[i].endswith("UB"):
                 continue
 
-            ax1.plot(
-                range(len(x_labels)), y[i],
-                color=self._COLORS[i], lw=1, ls="-",
-                marker=self._MARKERS[i], markersize=16,
-                markerfacecolor='None', markeredgewidth=2.5, zorder=-draw_idx
-            )
+            if is_topology_bar:
+                group_width = 0.82
+                bar_width = group_width / topology_bar_count
+                offset = (
+                    topology_bar_index - (topology_bar_count - 1) / 2.0
+                ) * bar_width
+                ax1.bar(
+                    x_positions + offset, y[i],
+                    width=bar_width * 0.9,
+                    color=self._COLORS[i], edgecolor="black", linewidth=0.8,
+                    hatch=self._HATCHES[i], zorder=2,
+                )
+                topology_bar_index += 1
+            else:
+                ax1.plot(
+                    x_positions, y[i],
+                    color=self._COLORS[i], lw=1, ls="-",
+                    marker=self._MARKERS[i], markersize=16,
+                    markerfacecolor='None', markeredgewidth=2.5, zorder=-draw_idx
+                )
             plotted.append(i)
 
         legend_names = []
@@ -440,6 +462,16 @@ class ChartGenerator:
             Ystart, Yend, Yinterval = _Ys / Ydiv, _Ye / Ydiv, _Yi / Ydiv
             label_step_factor = int(max(1, _label))
 
+        if is_topology_bar and not manual_y_range:
+            # Keep a zero baseline so the grouped bars do not exaggerate small
+            # differences between topology models.
+            Ystart = min(0.0, Ystart)
+            Yend = max(0.0, Yend)
+            rough_labels = (Yend - Ystart) / max(1e-12, Yinterval)
+            label_step_factor = max(
+                label_step_factor, int(math.ceil(rough_labels / 7))
+            )
+
         if label_every is not None:
             label_step_factor = int(max(1, label_every))
 
@@ -474,6 +506,8 @@ class ChartGenerator:
         ax1.yaxis.set_major_formatter(FuncFormatter(_fmt_y))
 
         plt.xticks(ticks=range(len(x_labels)), labels=x_labels, fontsize=self._FONT_SIZE_BASE+4)
+        if is_topology_bar:
+            ax1.set_xlim(-0.5, len(x_labels) - 0.5)
         plt.ylabel(Ylabel_text, fontsize=self._FONT_SIZE_BASE+4)
         plt.xlabel(Xlabel_text, fontsize=self._FONT_SIZE_BASE+4, labelpad=100)
         ax1.yaxis.set_label_coords(-0.16, 0.45)

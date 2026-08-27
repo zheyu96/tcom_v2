@@ -108,11 +108,117 @@ def normalize_topology_model(value):
             "topology model must be one of: waxman, grid, rgg (or 0, 1, 2)")
     return normalized
 
+def normalize_memory_distribution(value):
+    aliases = {
+        "0": "independent", "independent": "independent",
+        "1": "degree_proportional",
+        "degree-proportional": "degree_proportional",
+        "degree_proportional": "degree_proportional",
+        "2": "inverse_degree",
+        "inverse-degree": "inverse_degree",
+        "inverse_degree": "inverse_degree",
+    }
+    normalized = aliases.get(value.strip().lower())
+    if normalized is None:
+        raise ValueError(
+            "memory distribution must be one of: independent, "
+            "degree-proportional, inverse-degree (or 0, 1, 2)")
+    return normalized
+
+def allocate_integer_budget(node_ids, weights, total_memory, minimum=1):
+    """Allocate an exact integer budget using the largest-remainder rule."""
+    node_count = len(node_ids)
+    reserved = minimum * node_count
+    if total_memory < reserved:
+        raise ValueError(
+            f"total memory {total_memory} is below the minimum {reserved}")
+
+    weight_sum = sum(weights)
+    if weight_sum <= 0:
+        raise ValueError("memory-allocation weights must have a positive sum")
+
+    distributable = total_memory - reserved
+    exact_shares = [distributable * weight / weight_sum for weight in weights]
+    allocations = [minimum + int(math.floor(share)) for share in exact_shares]
+    remainder = total_memory - sum(allocations)
+    remainder_order = sorted(
+        range(node_count),
+        key=lambda index: (-(exact_shares[index] % 1.0), node_ids[index]))
+    for index in remainder_order[:remainder]:
+        allocations[index] += 1
+    return allocations
+
+def generate_memory_offsets(
+        graph, distribution, avg_memory, mem_vary, memory_rng):
+    node_ids = list(graph.nodes())
+
+    # No average was supplied: retain the historical generator exactly.  All
+    # experiments except mem_distribution use this branch.
+    if avg_memory is None:
+        if distribution != "independent":
+            raise ValueError(
+                "avg_memory is required for degree-based memory distributions")
+        offsets = [memory_rng.randint(-mem_vary, mem_vary) for _ in node_ids]
+        return offsets, None
+
+    total_memory = avg_memory * len(node_ids)
+    if distribution == "independent":
+        # Draw capacities independently of topology, then rebalance within the
+        # same bounds so every policy receives exactly the same total budget.
+        lower = max(1, avg_memory - mem_vary)
+        upper = max(lower, avg_memory + mem_vary)
+        allocations = [
+            memory_rng.randint(lower, upper) for _ in node_ids
+        ]
+        difference = total_memory - sum(allocations)
+        adjustment_order = list(range(len(node_ids)))
+        while difference != 0:
+            memory_rng.shuffle(adjustment_order)
+            changed = False
+            for index in adjustment_order:
+                if difference > 0 and allocations[index] < upper:
+                    allocations[index] += 1
+                    difference -= 1
+                    changed = True
+                elif difference < 0 and allocations[index] > lower:
+                    allocations[index] -= 1
+                    difference += 1
+                    changed = True
+                if difference == 0:
+                    break
+            if not changed:
+                raise RuntimeError("cannot rebalance independent memory budget")
+    else:
+        degrees = [max(1, graph.degree(node)) for node in node_ids]
+        if distribution == "degree_proportional":
+            weights = [float(degree) for degree in degrees]
+        else:
+            # High-degree transit nodes receive the least memory.  This is the
+            # reviewer-requested bottleneck scenario.
+            weights = [1.0 / degree for degree in degrees]
+        allocations = allocate_integer_budget(
+            node_ids, weights, total_memory, minimum=1)
+
+    offsets = [allocation - avg_memory for allocation in allocations]
+    return offsets, allocations
+
+def pearson_correlation(left, right):
+    left_mean = sum(left) / len(left)
+    right_mean = sum(right) / len(right)
+    numerator = sum(
+        (x - left_mean) * (y - right_mean)
+        for x, y in zip(left, right))
+    left_norm = math.sqrt(sum((x - left_mean) ** 2 for x in left))
+    right_norm = math.sqrt(sum((y - right_mean) ** 2 for y in right))
+    denominator = left_norm * right_norm
+    return numerator / denominator if denominator > 0 else 0.0
+
 
 if len(sys.argv) <= 2:
     print(
         "usage: graph_generator.py OUTPUT NUM_NODES [SEED] [MEM_VARY] "
-        "[waxman|grid|rgg]",
+        "[waxman|grid|rgg] "
+        "[independent|degree-proportional|inverse-degree] [AVG_MEMORY]",
         file=sys.stderr)
     sys.exit()
 
@@ -126,8 +232,23 @@ try:
 except ValueError as error:
     print(error, file=sys.stderr)
     sys.exit(2)
+try:
+    memory_distribution = normalize_memory_distribution(
+        sys.argv[6] if len(sys.argv) >= 7 else "independent")
+except ValueError as error:
+    print(error, file=sys.stderr)
+    sys.exit(2)
+avg_memory = int(sys.argv[7]) if len(sys.argv) >= 8 else None
 if mem_vary < 0:
     print("mem_vary must be non-negative", file=sys.stderr)
+    sys.exit(2)
+if avg_memory is not None and avg_memory < 1:
+    print("avg_memory must be positive", file=sys.stderr)
+    sys.exit(2)
+if memory_distribution != "independent" and avg_memory is None:
+    print(
+        "avg_memory is required for degree-based memory distributions",
+        file=sys.stderr)
     sys.exit(2)
 if experiment_seed is not None:
     random.seed(experiment_seed)
@@ -145,8 +266,14 @@ print("======== generating graph ========", file=sys.stderr)
 print("filename =", filename, file=sys.stderr)
 print("num_of_node =", num_of_node, file=sys.stderr)
 print("seed =", experiment_seed, file=sys.stderr)
-print("memory_offset_range =", f"[-{mem_vary}, +{mem_vary}]", file=sys.stderr)
+if memory_distribution == "independent":
+    print(
+        "memory_offset_range =", f"[-{mem_vary}, +{mem_vary}]",
+        file=sys.stderr)
+else:
+    print("memory_offset_range = degree-derived", file=sys.stderr)
 print("topology_model =", topology_model, file=sys.stderr)
+print("memory_distribution =", memory_distribution, file=sys.stderr)
 # print("min_fidelity =", min_fidelity, ", max_fidelity =", max_fidelity, file=sys.stderr)
 # print("min_memory_cnt =", min_memory_cnt, ", max_memory_cnt =", max_memory_cnt, file=sys.stderr)
 
@@ -178,17 +305,17 @@ fidelity_rng = random.Random(distribution_seed)
 for _ in range(num_of_node):
     fidelity_rng.randint(-1, 1)
 
+memory_offsets, allocated_memories = generate_memory_offsets(
+    G, memory_distribution, avg_memory, mem_vary, memory_rng)
+
 with open(path, 'w') as f:
     positions = nx.get_node_attributes(G, 'pos')
     # write node
     print(num_of_node, file=f)
-    memory_offsets = []
-    for n in G.nodes():
+    for n, num_of_memory in zip(G.nodes(), memory_offsets):
         (x, y) = positions[n]
         pos_x = str(x*RANGE)
         pos_y = str(y*RANGE)
-        num_of_memory = memory_rng.randint(-mem_vary, mem_vary)
-        memory_offsets.append(num_of_memory)
         print(num_of_memory, file = f)
     
     # write edge
@@ -230,6 +357,15 @@ print("avg_edge_len =", avg_l, file=sys.stderr)
 print("memory_offset_min =", min(memory_offsets), file=sys.stderr)
 print("memory_offset_max =", max(memory_offsets), file=sys.stderr)
 print("memory_offset_mean =", sum(memory_offsets) / len(memory_offsets), file=sys.stderr)
+if allocated_memories is not None:
+    degrees = [G.degree(node) for node in G.nodes()]
+    print("memory_total =", sum(allocated_memories), file=sys.stderr)
+    print("memory_min =", min(allocated_memories), file=sys.stderr)
+    print("memory_max =", max(allocated_memories), file=sys.stderr)
+    print(
+        "degree_memory_correlation =",
+        pearson_correlation(degrees, allocated_memories),
+        file=sys.stderr)
 print("\n======== graph generate finished ! ========", file=sys.stderr)
 
 

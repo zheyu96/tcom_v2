@@ -405,6 +405,11 @@ int main(){
     // topo_vary: 0=Waxman (default), 1=Grid, 2=RGG.  This setting is only
     // consumed by the dedicated topo_vary experiment.
     default_setting["topo_vary"] = 0;
+    // mem_distribution: 0=independent, 1=degree-proportional,
+    // 2=inverse-degree.  Only the dedicated mem_distribution experiment
+    // consumes this selector; every other X axis retains the legacy memory
+    // offsets generated from mem_vary.
+    default_setting["mem_distribution"] = 0;
     default_setting["tao"] = 0.002;
     default_setting["path_length"] = 3;
     // With threshold 0.8, max_fidelity=0.99 leaves a controlled set of
@@ -440,6 +445,7 @@ int main(){
     change_parameter["avg_memory"] = {4, 6, 8, 10, 12, 16, 20};
     change_parameter["mem_vary"] = {1, 2, 3, 4, 5};
     change_parameter["topo_vary"] = {0, 1, 2};
+    change_parameter["mem_distribution"] = {0, 1, 2};
     change_parameter["tao"] = {0.001,0.002,0.003,0.004,0.005};
     change_parameter["path_length"] = {3, 6, 9, 12, 15};
     change_parameter["swap_prob"] = {0.6, 0.7, 0.8, 0.9,0.95};
@@ -540,7 +546,7 @@ int main(){
 
     // vector<string> X_names = {"time_limit", "request_cnt", "num_nodes", "avg_memory", "tao"};
     //vector<string> X_names = {"request_cnt"};
-    vector<string> X_names = { /* "request_cnt", "time_limit", "tao", "mem_vary", */ "topo_vary"/* ,  "fidelity_threshold" , "avg_memory","hop_count","swap_prob"  */ };
+    vector<string> X_names = { "mem_distribution" };
     // Set EXPERIMENT_X_NAME (for example, EXPERIMENT_X_NAME=tao) to rerun a
     // single sweep without truncating or recomputing the other result files.
     if(const char* selected_x = std::getenv("EXPERIMENT_X_NAME")) {
@@ -627,6 +633,7 @@ int main(){
                     DBG_mem("round_start");
                     string filename = file_path + "input/round_" + to_string(r) + ".input";
                     string topology_model = "waxman";
+                    string memory_distribution_model = "independent";
                     if(X_name == "mem_vary") {
                         const int mem_vary = (int)input_parameter["mem_vary"];
                         const int num_nodes = (int)default_setting["num_nodes"];
@@ -643,6 +650,42 @@ int main(){
                             throw runtime_error(
                                 "graph_generator.py failed for mem_vary="
                                 + to_string(mem_vary));
+                        }
+                    } else if(X_name == "mem_distribution") {
+                        static const vector<string> memory_distribution_models = {
+                            "independent", "degree-proportional", "inverse-degree"
+                        };
+                        const int distribution_index =
+                            (int)input_parameter["mem_distribution"];
+                        if(distribution_index < 0 ||
+                           distribution_index >=
+                               (int)memory_distribution_models.size()) {
+                            throw runtime_error(
+                                "invalid mem_distribution index "
+                                + to_string(distribution_index));
+                        }
+                        memory_distribution_model =
+                            memory_distribution_models[distribution_index];
+                        const int num_nodes =
+                            (int)default_setting["num_nodes"];
+                        const int mem_vary =
+                            (int)default_setting["mem_vary"];
+                        const unsigned int experiment_seed =
+                            (unsigned int)default_setting["request_seed"] + r;
+                        filename = file_path + "input/round_" + to_string(r)
+                                 + "_mem_distribution_"
+                                 + memory_distribution_model + ".input";
+                        string command = "python3 graph_generator.py ";
+                        string parameter = to_string(num_nodes) + " "
+                                         + to_string(experiment_seed) + " "
+                                         + to_string(mem_vary) + " waxman "
+                                         + memory_distribution_model + " "
+                                         + to_string(avg_memory);
+                        cerr << (command + filename + " " + parameter) << endl;
+                        if(system((command + filename + " " + parameter).c_str()) != 0) {
+                            throw runtime_error(
+                                "graph_generator.py failed for mem_distribution="
+                                + memory_distribution_model);
                         }
                     } else if(X_name == "topo_vary") {
                         static const vector<string> topology_models = {
@@ -693,6 +736,15 @@ int main(){
                     Graph graph(filename, time_limit, swap_prob, avg_memory, min_fidelity, max_fidelity, fidelity_threshold, A, B, n, T, tao,Zmin,bucket_eps,time_eta,input_parameter["delta_P"],input_parameter["entangle_lambda"],input_parameter["entangle_time"]);
                     DBG_HERE("after Graph ctor");
                     DBG_mem("after_graph");
+                    if(X_name == "mem_distribution") {
+                        long long allocated_memory = 0;
+                        for(int node = 0; node < graph.get_num_nodes(); node++)
+                            allocated_memory += graph.get_node_memory(node);
+                        cerr << "[mem_distribution] model="
+                             << memory_distribution_model
+                             << " total_memory=" << allocated_memory
+                             << endl;
+                    }
 
                     ofs << "--------------- in round " << r << " -------------" <<endl;
                     vector<SDpair> topology_requests;
