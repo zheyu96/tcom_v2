@@ -121,35 +121,40 @@ class ChartGenerator:
     _BBOX_POS = {
         'fidelity_gain':{
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
-            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
+            'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'hop_count': _RIGHT_TOP,
             'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP
         },
         'succ_request_cnt':{
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
-            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
+            'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'hop_count': _RIGHT_TOP,
             'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP
         },
         'pure_fidelity':{
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
-            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
+            'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP,
             'hop_count': "auto",
         },
         'actual_req_cnt':{
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
-            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
+            'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'hop_count': _RIGHT_TOP,
             'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP
         },
         'runtime':{
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
-            'avg_memory': _LEFT_TOP, 'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
+            'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
+            'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'hop_count': _RIGHT_TOP,
             'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP
@@ -158,16 +163,18 @@ class ChartGenerator:
 
     _Y_INTERVALS = {
         'fidelity_gain':{
-            'request_cnt': (20, 120, 5, 4), 'tao': (0, 85, 5, 4),
-            'time_limit': (20, 80, 5, 4), 'avg_memory': (20, 80, 5, 4),
+            'request_cnt': (20, 120, 5, 4),
+            'tao': (0, 90, 5, 6), 'time_limit': (20, 80, 5, 4),
+            'avg_memory': (20, 80, 5, 4), 'mem_vary': "auto",
             'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 95, 5, 6),
             'swap_prob': (10, 80, 5, 4), 'entangle_time': "auto",
             'hop_count':(10,90,5,3),
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'succ_request_cnt':{
-            'request_cnt': (30, 140, 5, 6), 'tao': (0, 90, 5, 6),
-            'time_limit': (40, 90, 5, 4), 'avg_memory': (30, 90, 5, 6),
+            'request_cnt': (30, 140, 5, 6),
+            'tao': (0, 90, 5, 6), 'time_limit': (40, 90, 5, 4),
+            'avg_memory': (30, 90, 5, 6), 'mem_vary': "auto",
             'min_fidelity': (65, 95, 5, 1), 'fidelity_threshold': (0, 105, 5, 5),
             'swap_prob': (20, 90, 5, 4), 'hop_count':(20,105,5,7),
             'entangle_time': "auto",
@@ -176,14 +183,16 @@ class ChartGenerator:
         'pure_fidelity':{
             'request_cnt': (50, 80, 5, 2), 'tao': (50, 70, 1, 5),
             'time_limit': (45, 70, 1, 5), 'avg_memory': (20, 40, 1, 5),
+            'mem_vary': "auto",
             'min_fidelity': (50, 80, 1, 5), 'fidelity_threshold': (50, 70, 1, 5),
             'swap_prob': "auto", 'entangle_time': "auto", 'entangle_prob': "auto",
             'hop_count': "auto",
             'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'actual_req_cnt':{
-            'request_cnt': (40,165,5,8), 'tao': (0,120,5,4),
-            'time_limit': (50,110,5,5), 'avg_memory': (35,115,5,7),
+            'request_cnt': (40,165,5,8),
+            'tao': (0,130,5,6), 'time_limit': (50,110,5,5),
+            'avg_memory': (35,115,5,7), 'mem_vary': "auto",
             'min_fidelity': "auto", 'fidelity_threshold': (0,125,5,5),
             'swap_prob': (50,100,5,5), 'hop_count': "auto",
             'entangle_time': "auto",
@@ -191,7 +200,8 @@ class ChartGenerator:
         },
         'runtime':{
             'request_cnt': (0,40,5,2), 'tao': "auto", 'time_limit': "auto",
-            'avg_memory': "auto", 'min_fidelity': "auto", 'fidelity_threshold': "auto",
+            'avg_memory': "auto", 'mem_vary': "auto",
+            'min_fidelity': "auto", 'fidelity_threshold': "auto",
             'swap_prob': "auto", 'hop_count': "auto", 'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
@@ -199,7 +209,8 @@ class ChartGenerator:
 
     _AXIS_NAME = {
         "request_cnt": r"$\#$Requests", "time_limit": "$| T |$",
-        "avg_memory": "Average Memory Limit", "tao": r"$\it{\delta}$",
+        "avg_memory": "Average Memory Limit", "mem_vary": "Memory Variation",
+        "tao": r"$\it{\delta}$",
         "swap_prob": "Swapping Probability", "fidelity_gain": "Exp. Werner Param. Sum",
         "succ_request_cnt": r"$\#$Exp. Accepted Requests", "pure_fidelity": "Average Final Fidelity",
         "actual_req_cnt": r"$\#$Accpected Requests",
@@ -315,6 +326,15 @@ class ChartGenerator:
             x_labels = [f"{v:g}" if isinstance(v, float) else str(v) for v in tmp]
         else:
             x_labels = [str(v) for v in x_vals]
+
+        if x_key == "mem_vary":
+            varied_labels = []
+            for value in x_vals:
+                try:
+                    varied_labels.append(rf"$\pm {float(value):g}$")
+                except ValueError:
+                    varied_labels.append(str(value))
+            x_labels = varied_labels
 
         # Y 軸處理
         raw_max = max(max(y[i]) for i in visible_indices)
@@ -497,7 +517,7 @@ if __name__ == "__main__":
 
     Xlabels = [
         "request_cnt", "time_limit", "tao",
-        "avg_memory", "fidelity_threshold", "min_fidelity", "hop_count",
+        "avg_memory", "mem_vary", "fidelity_threshold", "min_fidelity", "hop_count",
         "swap_prob",
     ]
     Ylabels = [

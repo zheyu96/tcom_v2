@@ -54,6 +54,10 @@ if len(sys.argv) <= 2:
 filename = sys.argv[1]
 num_of_node = int(sys.argv[2])
 experiment_seed = int(sys.argv[3]) if len(sys.argv) >= 4 else None
+mem_vary = int(sys.argv[4]) if len(sys.argv) >= 5 else 1
+if mem_vary < 0:
+    print("mem_vary must be non-negative", file=sys.stderr)
+    sys.exit(2)
 if experiment_seed is not None:
     random.seed(experiment_seed)
     numpy.random.seed(experiment_seed % (2 ** 32))
@@ -70,6 +74,7 @@ print("======== generating graph ========", file=sys.stderr)
 print("filename =", filename, file=sys.stderr)
 print("num_of_node =", num_of_node, file=sys.stderr)
 print("seed =", experiment_seed, file=sys.stderr)
+print("memory_offset_range =", f"[-{mem_vary}, +{mem_vary}]", file=sys.stderr)
 # print("min_fidelity =", min_fidelity, ", max_fidelity =", max_fidelity, file=sys.stderr)
 # print("min_memory_cnt =", min_memory_cnt, ", max_memory_cnt =", max_memory_cnt, file=sys.stderr)
 
@@ -107,15 +112,30 @@ while True:
         print("topo is not connected", file=sys.stderr)
 
 path = filename
+
+# Keep topology and link fidelity identical across the mem_vary sweep.  The
+# historical generator drew N values from randint(-1, 1) before drawing link
+# fidelities.  Advancing a dedicated fidelity RNG by that same baseline
+# sequence preserves all existing mem_vary=1 inputs while allowing the memory
+# RNG to use a different range without perturbing any link value.
+distribution_seed = (experiment_seed if experiment_seed is not None
+                     else random.SystemRandom().randrange(2 ** 63))
+memory_rng = random.Random(distribution_seed)
+fidelity_rng = random.Random(distribution_seed)
+for _ in range(num_of_node):
+    fidelity_rng.randint(-1, 1)
+
 with open(path, 'w') as f:
     positions = nx.get_node_attributes(G, 'pos')
     # write node
     print(num_of_node, file=f)
+    memory_offsets = []
     for n in G.nodes():
         (x, y) = positions[n]
         pos_x = str(x*RANGE)
         pos_y = str(y*RANGE)
-        num_of_memory = random.randint(-1, 1)
+        num_of_memory = memory_rng.randint(-mem_vary, mem_vary)
+        memory_offsets.append(num_of_memory)
         print(num_of_memory, file = f)
     
     # write edge
@@ -142,7 +162,7 @@ with open(path, 'w') as f:
             #    ratio = 0.55
             # 70% link 在 sweet spot (需 purify), 30% 高 fid (非 purify 也能過)
             # F_init = ratio * 0.15 + 0.80, 最低 F_init >= 0.80 (ratio >= 0)
-            ratio = random.uniform(0.75, 0.99)
+            ratio = fidelity_rng.uniform(0.75, 0.99)
             if ratio > 0.99:
                 ratio = 0.98
             if ratio < 0.75:
@@ -154,6 +174,9 @@ with open(path, 'w') as f:
 
 print("num_of_edge =", num_of_edge, file=sys.stderr)
 print("avg_edge_len =", avg_l, file=sys.stderr)
+print("memory_offset_min =", min(memory_offsets), file=sys.stderr)
+print("memory_offset_max =", max(memory_offsets), file=sys.stderr)
+print("memory_offset_mean =", sum(memory_offsets) / len(memory_offsets), file=sys.stderr)
 print("\n======== graph generate finished ! ========", file=sys.stderr)
 
 

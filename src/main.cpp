@@ -399,6 +399,9 @@ int main(){
     // A memory budget of 10 creates measurable contention without making the
     // experiment overwhelmingly capacity-limited.
     default_setting["avg_memory"] = 10;
+    // Node memory is avg_memory plus a discrete-uniform offset in
+    // [-mem_vary, +mem_vary].  A value of 1 preserves the old distribution.
+    default_setting["mem_vary"] = 1;
     default_setting["tao"] = 0.002;
     default_setting["path_length"] = 3;
     // With threshold 0.8, max_fidelity=0.99 leaves a controlled set of
@@ -432,6 +435,7 @@ int main(){
     change_parameter["num_nodes"] = {30, 40, 50, 60, 70};
     change_parameter["min_fidelity"] = {0.6, 0.7, 0.8, 0.9, 0.95};
     change_parameter["avg_memory"] = {4, 6, 8, 10, 12, 16, 20};
+    change_parameter["mem_vary"] = {1, 2, 3, 4, 5};
     change_parameter["tao"] = {0.001,0.002,0.003,0.004,0.005};
     change_parameter["path_length"] = {3, 6, 9, 12, 15};
     change_parameter["swap_prob"] = {0.6, 0.7, 0.8, 0.9,0.95};
@@ -470,7 +474,8 @@ int main(){
         const unsigned int experiment_seed =
             (unsigned int)default_setting["request_seed"] + r;
         string parameter = to_string(num_nodes) + " "
-                         + to_string(experiment_seed);
+                         + to_string(experiment_seed) + " "
+                         + to_string((int)default_setting["mem_vary"]);
         cerr << (command + filename + " " + parameter) << endl;
         if(system((command + filename + " " + parameter).c_str()) != 0){
             cerr<<"error:\tsystem proccess python error"<<endl;
@@ -531,7 +536,7 @@ int main(){
 
     // vector<string> X_names = {"time_limit", "request_cnt", "num_nodes", "avg_memory", "tao"};
     //vector<string> X_names = {"request_cnt"};
-    vector<string> X_names = {/*  "request_cnt", "time_limit", */ "tao"/* ,  "fidelity_threshold" , "avg_memory","hop_count","swap_prob" */ };
+    vector<string> X_names = {/*  "request_cnt", "time_limit", */ "tao", "mem_vary"/* ,  "fidelity_threshold" , "avg_memory","hop_count","swap_prob" */ };
     // Set EXPERIMENT_X_NAME (for example, EXPERIMENT_X_NAME=tao) to rerun a
     // single sweep without truncating or recomputing the other result files.
     if(const char* selected_x = std::getenv("EXPERIMENT_X_NAME")) {
@@ -614,6 +619,24 @@ int main(){
                     cerr << "[CKPT] === ROUND " << r << " START | X=" << X_name << " val=" << change_value << " ===" << endl;
                     DBG_mem("round_start");
                     string filename = file_path + "input/round_" + to_string(r) + ".input";
+                    if(X_name == "mem_vary") {
+                        const int mem_vary = (int)input_parameter["mem_vary"];
+                        const int num_nodes = (int)default_setting["num_nodes"];
+                        const unsigned int experiment_seed =
+                            (unsigned int)default_setting["request_seed"] + r;
+                        filename = file_path + "input/round_" + to_string(r)
+                                 + "_mem_vary_" + to_string(mem_vary) + ".input";
+                        string command = "python3 graph_generator.py ";
+                        string parameter = to_string(num_nodes) + " "
+                                         + to_string(experiment_seed) + " "
+                                         + to_string(mem_vary);
+                        cerr << (command + filename + " " + parameter) << endl;
+                        if(system((command + filename + " " + parameter).c_str()) != 0) {
+                            throw runtime_error(
+                                "graph_generator.py failed for mem_vary="
+                                + to_string(mem_vary));
+                        }
+                    }
                     ofstream ofs;
                     ofs.open(file_path + "log/" + path_method->get_name() + "_" + X_name + "_in_" + to_string(change_value) + "_Round_" + to_string(r) + ".log");
 
