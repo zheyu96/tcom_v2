@@ -158,18 +158,18 @@ class ChartGenerator:
 
     _Y_INTERVALS = {
         'fidelity_gain':{
-            'request_cnt': (30, 120, 5, 6), 'tao': (0, 85, 5, 4),
+            'request_cnt': (20, 120, 5, 4), 'tao': (0, 85, 5, 4),
             'time_limit': (20, 80, 5, 4), 'avg_memory': (20, 80, 5, 4),
-            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 90, 5, 6),
-            'swap_prob': (10, 70, 5, 2), 'entangle_time': "auto",
+            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 95, 5, 6),
+            'swap_prob': (10, 80, 5, 4), 'entangle_time': "auto",
             'hop_count':(10,90,5,3),
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'succ_request_cnt':{
-            'request_cnt': (40, 140, 5, 4), 'tao': (0, 90, 5, 6),
-            'time_limit': (45, 60, 5, 1), 'avg_memory': (40, 80, 5, 4),
-            'min_fidelity': (65, 95, 5, 1), 'fidelity_threshold': (0, 90, 5, 6),
-            'swap_prob': (25, 70, 5, 1), 'hop_count':(20,105,5,7),
+            'request_cnt': (30, 140, 5, 6), 'tao': (0, 90, 5, 6),
+            'time_limit': (40, 90, 5, 4), 'avg_memory': (30, 90, 5, 6),
+            'min_fidelity': (65, 95, 5, 1), 'fidelity_threshold': (0, 105, 5, 5),
+            'swap_prob': (20, 90, 5, 4), 'hop_count':(20,105,5,7),
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
@@ -183,14 +183,14 @@ class ChartGenerator:
         },
         'actual_req_cnt':{
             'request_cnt': (40,165,5,8), 'tao': (0,120,5,4),
-            'time_limit': (50,75,5,1), 'avg_memory': (50,100,5,5),
-            'min_fidelity': "auto", 'fidelity_threshold': (0,85,5,4),
+            'time_limit': (50,110,5,5), 'avg_memory': (35,115,5,7),
+            'min_fidelity': "auto", 'fidelity_threshold': (0,125,5,5),
             'swap_prob': (50,100,5,5), 'hop_count': "auto",
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'runtime':{
-            'request_cnt': "auto", 'tao': "auto", 'time_limit': "auto",
+            'request_cnt': (0,40,5,2), 'tao': "auto", 'time_limit': "auto",
             'avg_memory': "auto", 'min_fidelity': "auto", 'fidelity_threshold': "auto",
             'swap_prob': "auto", 'hop_count': "auto", 'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"

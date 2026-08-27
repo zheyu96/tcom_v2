@@ -432,7 +432,6 @@ int main(){
     change_parameter["num_nodes"] = {30, 40, 50, 60, 70};
     change_parameter["min_fidelity"] = {0.6, 0.7, 0.8, 0.9, 0.95};
     change_parameter["avg_memory"] = {4, 6, 8, 10, 12, 16, 20};
-    // change_parameter["tao"] = {0.3, 0.4, 0.5, 0.6, 0.7};
     change_parameter["tao"] = {0.001,0.002,0.003,0.004,0.005};
     change_parameter["path_length"] = {3, 6, 9, 12, 15};
     change_parameter["swap_prob"] = {0.6, 0.7, 0.8, 0.9,0.95};
@@ -532,7 +531,17 @@ int main(){
 
     // vector<string> X_names = {"time_limit", "request_cnt", "num_nodes", "avg_memory", "tao"};
     //vector<string> X_names = {"request_cnt"};
-    vector<string> X_names = { "request_cnt", "time_limit", "tao",  "fidelity_threshold" , "avg_memory","hop_count","swap_prob" };
+    vector<string> X_names = {/*  "request_cnt", "time_limit", */ "tao"/* ,  "fidelity_threshold" , "avg_memory","hop_count","swap_prob" */ };
+    // Set EXPERIMENT_X_NAME (for example, EXPERIMENT_X_NAME=tao) to rerun a
+    // single sweep without truncating or recomputing the other result files.
+    if(const char* selected_x = std::getenv("EXPERIMENT_X_NAME")) {
+        const string selected_name(selected_x);
+        if(change_parameter.find(selected_name) == change_parameter.end()) {
+            cerr << "Unknown EXPERIMENT_X_NAME: " << selected_name << endl;
+            return 2;
+        }
+        X_names = {selected_name};
+    }
     //vector<string> X_names = {"Zmin","bucket_eps","time_eta"};
     vector<string> Y_names = {
         "fidelity_gain", "succ_request_cnt", "actual_req_cnt", "runtime"

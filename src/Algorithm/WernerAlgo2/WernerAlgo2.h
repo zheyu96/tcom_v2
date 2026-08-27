@@ -34,7 +34,7 @@ public:
                double epsilon = 0.55,
                // WPFA uses finer Z/P buckets than the shared graph default.
                // Runtime experiments can still override this explicitly.
-               double bucket_eps = 0.01);
+               double bucket_eps = 0.0001);
 
     void run();
     void set_experiment_label(const string& label) { experiment_label = label; }
