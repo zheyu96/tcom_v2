@@ -18,6 +18,13 @@ algorithm2 = Algorithm/MyAlgo3/MyAlgo3.o Algorithm/MyAlgo1_time/MyAlgo1_time.o
 algorithm_runtime_compare = Algorithm/WernerAlgo2/WernerAlgo2.o \
                             Algorithm/EFiRAP/EFiRAP.o \
                             Algorithm/EFiRAP_longtime/EFiRAP_longtime.o
+algorithm_main_time = Algorithm/WernerAlgo/WernerAlgo.o \
+                      Algorithm/WernerAlgo2/WernerAlgo2.o \
+                      Algorithm/WernerAlgo3/WernerAlgo3.o \
+                      Algorithm/MyAlgo1/MyAlgo1.o \
+                      Algorithm/MyAlgo3/MyAlgo3.o \
+                      Algorithm/EFiRAP/EFiRAP.o \
+                      Algorithm/EFiRAP_longtime/EFiRAP_longtime.o
 
 # 路由與路徑方法
 routing = Network/PathMethod/PathMethodBase/PathMethod.o Network/PathMethod/Greedy/Greedy.o \
@@ -75,6 +82,11 @@ runtime: runtime.cpp $(dependency) $(algorithm2) $(routing)
 # builds the executable; run ./runtime_compare --help for benchmark options.
 runtime_compare: runtime_compare.cpp $(workload) $(dependency) $(algorithm_runtime_compare) $(routing_runtime_compare)
 	g++ -fopenmp $(gcc_flag) runtime_compare.cpp $(workload) $(dependency) $(algorithm_runtime_compare) $(routing_runtime_compare) $(gurobi_flag) -o runtime_compare
+
+# Dedicated runtime-only experiment for request_cnt, fidelity_threshold, and
+# time_limit. The executable writes raw/summary CSV and chart-compatible ANS.
+main_time: main_time.cpp $(workload) $(dependency) $(algorithm_main_time) $(routing_runtime_compare)
+	g++ -fopenmp $(gcc_flag) main_time.cpp $(workload) $(dependency) $(algorithm_main_time) $(routing_runtime_compare) $(gurobi_flag) -o main_time
 
 # 4. 預設主程式目標 (包含 MyAlgo 1-6)
 a.out: main.cpp $(workload) $(dependency) $(algorithm) $(routing)
@@ -151,11 +163,11 @@ ExperimentWorkload.o: ExperimentWorkload.cpp ExperimentWorkload.h Network/Graph/
 
 # --- 清除工具 ---
 clean:
-	rm -f a.out zfa_run zfa2_run runtime runtime_compare runtime_compare.exe
+	rm -f a.out zfa_run zfa2_run runtime runtime_compare runtime_compare.exe main_time main_time.exe
 	find . -type f -name '*.o' -delete
 	find . -type f -name '*.h.gch' -delete
 	rm -f ../data/ans/*.ans
 	rm -f ../data/log/*
 	rm -f ../data/input/*
 
-.PHONY: clean all zfa_run zfa2_run runtime runtime_compare
+.PHONY: clean all zfa_run zfa2_run runtime runtime_compare main_time

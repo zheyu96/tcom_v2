@@ -12,3 +12,5 @@ data/ans/*.csv
 *.zip
 *runtime
 *cdf
+/src/main_time
+/src/main_time.exe
