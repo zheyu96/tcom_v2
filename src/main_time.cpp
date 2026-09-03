@@ -42,6 +42,13 @@ using namespace std;
 
 namespace {
 
+// ==================== Runtime experiment controls ====================
+// Edit these two values and rebuild main_time to change ZFA2/WPFA's
+// approximation and DP bucket settings for all three runtime sweeps.
+constexpr double MAIN_TIME_EPSILON = 0.55;
+constexpr double MAIN_TIME_BUCKET_EPS = 0.0001;
+// =====================================================================
+
 const string REQUEST_COUNT = "request_cnt";
 const string FIDELITY_THRESHOLD = "fidelity_threshold";
 const string TIME_LIMIT = "time_limit";
@@ -62,6 +69,11 @@ struct Config {
     int repetitions = 1;
     int warmups = 0;
     uint32_t seed = 20260820U;
+    // These two parameters belong to ZFA2/WPFA. Other algorithms retain
+    // their original parameter settings so the runtime comparison stays
+    // consistent with main.cpp.
+    double epsilon = MAIN_TIME_EPSILON;
+    double bucket_eps = MAIN_TIME_BUCKET_EPS;
     bool regenerate_inputs = true;
     bool show_algorithm_output = false;
 };
@@ -231,6 +243,10 @@ void print_usage(const char* executable) {
         << "  --repetitions N            Timed repetitions per instance (default: 1)\n"
         << "  --warmups N                Untimed runs per instance (default: 0)\n"
         << "  --seed N                   Base graph/request seed (default: 20260820)\n"
+        << "  --epsilon X                ZFA2/WPFA epsilon (code default: "
+        << MAIN_TIME_EPSILON << ")\n"
+        << "  --bucket-eps X             ZFA2/WPFA bucket epsilon (code default: "
+        << MAIN_TIME_BUCKET_EPS << ")\n"
         << "  --input-pattern PATH       {} is replaced by the instance index\n"
         << "  --output-dir PATH          Existing output directory (default: ../data/ans)\n"
         << "  --python COMMAND           Graph generator command (default: python3)\n"
@@ -292,6 +308,21 @@ Config parse_arguments(int argc, char** argv) {
             } catch(const exception&) {
                 throw invalid_argument(option + " expects a 32-bit unsigned integer");
             }
+        } else if(option == "--epsilon" || option == "--fixed-epsilon") {
+            vector<double> parsed = parse_number_list(
+                require_value(index, option), option);
+            if(parsed.size() != 1 || parsed.front() <= 0.0) {
+                throw invalid_argument(option + " expects one positive number");
+            }
+            config.epsilon = parsed.front();
+        } else if(option == "--bucket-eps" ||
+                  option == "--fixed-bucket-eps") {
+            vector<double> parsed = parse_number_list(
+                require_value(index, option), option);
+            if(parsed.size() != 1 || parsed.front() <= 0.0) {
+                throw invalid_argument(option + " expects one positive number");
+            }
+            config.bucket_eps = parsed.front();
         } else if(option == "--input-pattern") {
             config.input_pattern = require_value(index, option);
         } else if(option == "--output-dir") {
@@ -475,7 +506,9 @@ unique_ptr<AlgorithmBase> make_algorithm(
     const Graph& graph,
     const vector<SDpair>& requests,
     const map<SDpair, vector<Path>>& paths,
-    const string& experiment_label) {
+    const string& experiment_label,
+    double epsilon,
+    double bucket_eps) {
     if(name == "ZFA_UB") {
         return unique_ptr<AlgorithmBase>(new WernerAlgo3(graph, requests, paths));
     }
@@ -484,7 +517,7 @@ unique_ptr<AlgorithmBase> make_algorithm(
     }
     if(name == "ZFA2") {
         unique_ptr<WernerAlgo2> algorithm(
-            new WernerAlgo2(graph, requests, paths));
+            new WernerAlgo2(graph, requests, paths, epsilon, bucket_eps));
         algorithm->set_detailed_logging(false);
         algorithm->set_experiment_label(experiment_label);
         return unique_ptr<AlgorithmBase>(algorithm.release());
@@ -519,7 +552,8 @@ Sample run_sample(
         " instance=" + to_string(instance) +
         " repetition=" + to_string(repetition);
     unique_ptr<AlgorithmBase> algorithm = make_algorithm(
-        algorithm_name, graph, requests, paths, label);
+        algorithm_name, graph, requests, paths, label,
+        config.epsilon, config.bucket_eps);
 
     chrono::steady_clock::time_point start;
     chrono::steady_clock::time_point finish;
@@ -583,7 +617,7 @@ void write_summary(const Config& config, const vector<Sample>& samples) {
         config.output_directory, "main_time_runtime_summary.csv");
     ofstream output(filename, ios::trunc);
     if(!output) throw runtime_error("cannot open summary output: " + filename);
-    output << "sweep,parameter_value,algorithm,samples,mean_seconds,"
+    output << "sweep,parameter_value,algorithm,epsilon,bucket_eps,samples,mean_seconds,"
               "median_seconds,stddev_seconds,min_seconds,max_seconds\n";
     output << fixed << setprecision(9);
 
@@ -605,6 +639,7 @@ void write_summary(const Config& config, const vector<Sample>& samples) {
                     squared_error / runtimes.size());
                 auto bounds = minmax_element(runtimes.begin(), runtimes.end());
                 output << sweep << ',' << value << ',' << algorithm << ','
+                       << config.epsilon << ',' << config.bucket_eps << ','
                        << runtimes.size() << ',' << mean << ','
                        << median(runtimes) << ',' << standard_deviation << ','
                        << *bounds.first << ',' << *bounds.second << '\n';
@@ -666,12 +701,15 @@ int main(int argc, char** argv) {
         ofstream raw_output(raw_filename, ios::trunc);
         if(!raw_output) throw runtime_error("cannot open raw output: " + raw_filename);
         raw_output << "sweep,parameter_value,request_count,fidelity_threshold,"
-                      "time_limit,instance,repetition,algorithm,run_seconds\n";
+                      "time_limit,instance,repetition,algorithm,epsilon,"
+                      "bucket_eps,run_seconds\n";
         raw_output << fixed << setprecision(9);
 
         cout << "[main_time] algorithm columns:";
         for(const string& algorithm : config.algorithms) cout << ' ' << algorithm;
-        cout << '\n';
+        cout << '\n'
+             << "[main_time] ZFA2/WPFA epsilon=" << config.epsilon
+             << " bucket_eps=" << config.bucket_eps << '\n';
 
         vector<Sample> samples;
         for(const string& sweep : config.sweeps) {
@@ -710,6 +748,8 @@ int main(int argc, char** argv) {
                                        << sample.instance << ','
                                        << sample.repetition << ','
                                        << sample.algorithm << ','
+                                       << config.epsilon << ','
+                                       << config.bucket_eps << ','
                                        << sample.seconds << '\n';
                             raw_output.flush();
                             cout << "[main_time] " << sweep << '=' << value
