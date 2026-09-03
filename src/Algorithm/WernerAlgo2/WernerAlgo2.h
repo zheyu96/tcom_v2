@@ -52,7 +52,7 @@ private:
         int a = -1, b = -1, t = -1, k = -1; // 狀態索引與輔助
         int left_id=-1,right_id=-1,parent_id=-1;//左邊第幾個cand和右邊第幾個cand,祖先是第幾個cand
         Op op = Op::LEAF;
-        vector<int> ent_time;
+        int ent_start = -1, ent_end = -1;
         // 回溯
         ZLabel(){}
         ZLabel(double _B, double _Z, double _P, Op _op,int _purify_type, int _a, int _b, int _t, int _k, int pid = -1, int lid = -1, int rid = -1)
@@ -74,21 +74,28 @@ private:
     vector<map<Shape_vector,double>> x;
     // ===== 全時間 DP 表：L_all[time][a][b] =====
     // 每個 cell 是「非支配候選集」
-    vector<vector<vector<vector<ZLabel>>>> DP_table;
+    using DPTable = vector<vector<vector<vector<ZLabel>>>>;
     // ===== 主流程 =====
     void variable_initialize();
     Shape_vector separation_oracle();
 
     // 在固定 path 上做 Werner DP，填滿 L_all（t=1..T-1）
-    void run_dp_in_t(const Path& path, const DPParam& dpp,int t);
+    void run_dp_in_t(const Path& path, const DPParam& dpp, int t,
+                     const vector<double>& edge_werner,
+                     const vector<double>& edge_entangle_prob,
+                     const vector<double>& swap_log_prob,
+                     DPTable& dp_table);
 
     // ===== 基本操作（Pareto / 分桶 / 存儲 / 回溯 / 評分） =====
     void pareto_prune_byZ(vector<ZLabel>& cand);
     void bucket_by_ZP(vector<ZLabel>& cand);
 
-    Shape_vector backtrack_shape(ZLabel leaf, const vector<int>& path, vector<int>& out_purify_rounds);
-    int split_dis(int s,int d,WernerAlgo2::ZLabel& L);
-    pair<double,WernerAlgo2::ZLabel> eval_best_J(int s, int d, int t, double alp);
+    Shape_vector backtrack_shape(const ZLabel& leaf, const vector<int>& path,
+                                 vector<int>& out_purify_rounds,
+                                 const DPTable& dp_table);
+    int split_dis(int s, int d, const WernerAlgo2::ZLabel& L);
+    pair<double,WernerAlgo2::ZLabel> eval_best_J(
+        int s, int d, int t, double alp, const DPTable& dp_table);
     int purify_time=3;
     double Purify_in_vt[4][5]={
         {1,1},
@@ -97,7 +104,10 @@ private:
         {1,2,3,3,2},
     };
 
-    ZLabel gen_leaf_label(int s,int e,int st,int tlen,int path_a,int path_b);
+    ZLabel gen_leaf_label(int s, int e, int st, int tlen,
+                          int path_a, int path_b,
+                          double edge_werner,
+                          double edge_entangle_prob);
     // 暫存最近一次 oracle 回傳 shape 對應的 purify rounds
     map<Shape_vector, vector<int>> shape_purify_map;
     string experiment_label;  // 目前實驗的標籤 (例如 "request_cnt=80")
@@ -110,6 +120,14 @@ private:
         bool valid = false;
     };
     vector<vector<OracleCache>> oracle_cache;
+    // Request workloads intentionally contain repeated SD pairs. Requests in
+    // one group share the same candidate paths and therefore the same DP
+    // frontier; only their alpha value differs when the frontier is scored.
+    vector<vector<int>> request_groups;
+    // One reusable DP arena per OpenMP worker avoids rebuilding thousands of
+    // nested vectors on every oracle call.
+    int oracle_worker_count = 1;
+    vector<DPTable> dp_workspaces;
     set<int> dirty_nodes;
     set<int> dirty_alpha_idxs;
 };
