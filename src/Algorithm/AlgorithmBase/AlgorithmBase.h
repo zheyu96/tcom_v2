@@ -30,6 +30,15 @@ public:
     double get_res(string str);
     const vector<double>& get_cdf() const;
     string get_name();
+    // Opt-in audit trail of the schedules this algorithm reserved.  Enable
+    // before run(); the records are exactly the accepted schedules that the
+    // reported objective was accumulated from.
+    void set_record_accepted_shapes(bool enabled) {
+        graph.set_record_accepted_shapes(enabled);
+    }
+    const vector<AcceptedShapeRecord>& get_accepted_shapes() const {
+        return graph.get_accepted_shapes();
+    }
     virtual ~AlgorithmBase();
     virtual void run() = 0;
 };

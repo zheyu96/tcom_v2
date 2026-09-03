@@ -110,19 +110,23 @@ def normalize_topology_model(value):
 
 def normalize_memory_distribution(value):
     aliases = {
-        "0": "independent", "independent": "independent",
+        "0": "uniform", "uniform": "uniform",
         "1": "degree_proportional",
         "degree-proportional": "degree_proportional",
         "degree_proportional": "degree_proportional",
         "2": "inverse_degree",
         "inverse-degree": "inverse_degree",
         "inverse_degree": "inverse_degree",
+        "3": "heterogeneous", "heterogeneous": "heterogeneous",
+        # Backward-compatible name for the former topology-independent mode.
+        "independent": "heterogeneous",
     }
     normalized = aliases.get(value.strip().lower())
     if normalized is None:
         raise ValueError(
-            "memory distribution must be one of: independent, "
-            "degree-proportional, inverse-degree (or 0, 1, 2)")
+            "memory distribution must be one of: uniform, "
+            "degree-proportional, inverse-degree, heterogeneous "
+            "(or 0, 1, 2, 3)")
     return normalized
 
 def allocate_integer_budget(node_ids, weights, total_memory, minimum=1):
@@ -152,19 +156,22 @@ def generate_memory_offsets(
         graph, distribution, avg_memory, mem_vary, memory_rng):
     node_ids = list(graph.nodes())
 
-    # No average was supplied: retain the historical generator exactly.  All
-    # experiments except mem_distribution use this branch.
+    # No average was supplied: retain the historical heterogeneous generator
+    # exactly.  All experiments except mem_distribution use this branch.
     if avg_memory is None:
-        if distribution != "independent":
+        if distribution != "heterogeneous":
             raise ValueError(
-                "avg_memory is required for degree-based memory distributions")
+                "avg_memory is required for uniform or degree-based "
+                "memory distributions")
         offsets = [memory_rng.randint(-mem_vary, mem_vary) for _ in node_ids]
         return offsets, None
 
     total_memory = avg_memory * len(node_ids)
-    if distribution == "independent":
-        # Draw capacities independently of topology, then rebalance within the
-        # same bounds so every policy receives exactly the same total budget.
+    if distribution == "uniform":
+        allocations = [avg_memory for _ in node_ids]
+    elif distribution == "heterogeneous":
+        # Draw unequal capacities independently of topology, then rebalance
+        # within the same bounds so every policy has the same total budget.
         lower = max(1, avg_memory - mem_vary)
         upper = max(lower, avg_memory + mem_vary)
         allocations = [
@@ -187,7 +194,7 @@ def generate_memory_offsets(
                 if difference == 0:
                     break
             if not changed:
-                raise RuntimeError("cannot rebalance independent memory budget")
+                raise RuntimeError("cannot rebalance heterogeneous memory budget")
     else:
         degrees = [max(1, graph.degree(node)) for node in node_ids]
         if distribution == "degree_proportional":
@@ -218,7 +225,8 @@ if len(sys.argv) <= 2:
     print(
         "usage: graph_generator.py OUTPUT NUM_NODES [SEED] [MEM_VARY] "
         "[waxman|grid|rgg] "
-        "[independent|degree-proportional|inverse-degree] [AVG_MEMORY]",
+        "[uniform|degree-proportional|inverse-degree|heterogeneous] "
+        "[AVG_MEMORY]",
         file=sys.stderr)
     sys.exit()
 
@@ -234,7 +242,7 @@ except ValueError as error:
     sys.exit(2)
 try:
     memory_distribution = normalize_memory_distribution(
-        sys.argv[6] if len(sys.argv) >= 7 else "independent")
+        sys.argv[6] if len(sys.argv) >= 7 else "heterogeneous")
 except ValueError as error:
     print(error, file=sys.stderr)
     sys.exit(2)
@@ -245,9 +253,10 @@ if mem_vary < 0:
 if avg_memory is not None and avg_memory < 1:
     print("avg_memory must be positive", file=sys.stderr)
     sys.exit(2)
-if memory_distribution != "independent" and avg_memory is None:
+if memory_distribution != "heterogeneous" and avg_memory is None:
     print(
-        "avg_memory is required for degree-based memory distributions",
+        "avg_memory is required for uniform or degree-based memory "
+        "distributions",
         file=sys.stderr)
     sys.exit(2)
 if experiment_seed is not None:
@@ -266,10 +275,12 @@ print("======== generating graph ========", file=sys.stderr)
 print("filename =", filename, file=sys.stderr)
 print("num_of_node =", num_of_node, file=sys.stderr)
 print("seed =", experiment_seed, file=sys.stderr)
-if memory_distribution == "independent":
+if memory_distribution == "heterogeneous":
     print(
         "memory_offset_range =", f"[-{mem_vary}, +{mem_vary}]",
         file=sys.stderr)
+elif memory_distribution == "uniform":
+    print("memory_offset_range = [0, 0]", file=sys.stderr)
 else:
     print("memory_offset_range = degree-derived", file=sys.stderr)
 print("topology_model =", topology_model, file=sys.stderr)

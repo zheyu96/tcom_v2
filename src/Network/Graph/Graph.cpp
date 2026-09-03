@@ -337,6 +337,7 @@ void Graph::reserve_shape_ASAP(Shape shape, bool enable_purification) {
         fidelity_gain += (Purification::fidelity_to_werner(shape_fidelity) * pr);
         pure_fidelity += shape_fidelity;
         succ_request_cnt += pr;
+        record_accepted_shape(shape, shape_fidelity, pr);
     }
 
     for(int i = 0; i < (int)boundary.size(); i++) {
@@ -404,6 +405,7 @@ void Graph::reserve_shape(Shape shape, bool enable_purification /*= false*/) {
     pure_fidelity += shape_fidelity;
     succ_request_cnt += pr;
     actual_req_cnt+=1;
+    record_accepted_shape(shape, shape_fidelity, pr);
     for(int i = 0; i < (int)boundary.size(); i++) {
         if(shape_fidelity < boundary[i]) {
             cnt[i] = cnt[i] + 1;
@@ -460,6 +462,7 @@ void Graph::reserve_shape2(Shape shape, bool enable_purification) {
         fidelity_gain += (Purification::fidelity_to_werner(shape_fidelity) * pr);
         pure_fidelity += shape_fidelity;
         succ_request_cnt += pr;
+        record_accepted_shape(shape, shape_fidelity, pr);
     }
 
     for(int i = 0; i < (int)boundary.size(); i++) {
@@ -556,6 +559,46 @@ bool Graph::check_path_resource(Path path, int amount) {
     return remain >= amount;
 }
 
+
+double Graph::get_Gamma() { return Gamma; }
+
+double Graph::get_entangle_lambda() { return entangle_lambda; }
+
+double Graph::get_entangle_time() { return entangle_time; }
+
+// Mirrors the constructor: the number of entangling attempts that fit in one
+// slot of duration tao.
+int Graph::get_entangle_attempts() {
+    if(entangle_time <= 0.0) return 1;
+    int attempts = (int)floor(tao / entangle_time);
+    return attempts < 1 ? 1 : attempts;
+}
+
+void Graph::set_record_accepted_shapes(bool enabled) {
+    record_accepted_shapes_enabled = enabled;
+    if(!enabled) accepted_shape_records.clear();
+}
+
+const vector<AcceptedShapeRecord>& Graph::get_accepted_shapes() const {
+    return accepted_shape_records;
+}
+
+// Called from the reserve_shape* family right after a schedule is accounted
+// for, so the recorded fidelity/probability are exactly the values that the
+// reported objective was built from.
+void Graph::record_accepted_shape(Shape& shape, double shape_fidelity, double pr) {
+    if(!record_accepted_shapes_enabled) return;
+    AcceptedShapeRecord record;
+    record.node_mem_range = shape.get_node_mem_range();
+    record.purify_rounds = shape.get_link_purify_rounds();
+    record.src = record.node_mem_range.front().first;
+    record.dst = record.node_mem_range.back().first;
+    record.fidelity = shape_fidelity;
+    record.success_probability = pr;
+    record.expected_werner =
+        Purification::fidelity_to_werner(shape_fidelity) * pr;
+    accepted_shape_records.push_back(record);
+}
 
 void Graph::reserve_node_memory_at(int node_id, int t, int amount) {
     nodes[node_id].reserve_memory(t, amount);

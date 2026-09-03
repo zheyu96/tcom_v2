@@ -405,10 +405,10 @@ int main(){
     // topo_vary: 0=Waxman (default), 1=Grid, 2=RGG.  This setting is only
     // consumed by the dedicated topo_vary experiment.
     default_setting["topo_vary"] = 0;
-    // mem_distribution: 0=independent, 1=degree-proportional,
-    // 2=inverse-degree.  Only the dedicated mem_distribution experiment
-    // consumes this selector; every other X axis retains the legacy memory
-    // offsets generated from mem_vary.
+    // mem_distribution: 0=uniform, 1=degree-proportional,
+    // 2=inverse-degree, 3=heterogeneous.  All four policies use the same
+    // total memory budget in the dedicated mem_distribution experiment;
+    // every other X axis retains the legacy offsets generated from mem_vary.
     default_setting["mem_distribution"] = 0;
     default_setting["tao"] = 0.002;
     default_setting["path_length"] = 3;
@@ -445,7 +445,7 @@ int main(){
     change_parameter["avg_memory"] = {4, 6, 8, 10, 12, 16, 20};
     change_parameter["mem_vary"] = {1, 2, 3, 4, 5};
     change_parameter["topo_vary"] = {0, 1, 2};
-    change_parameter["mem_distribution"] = {0, 1, 2};
+    change_parameter["mem_distribution"] = {0, 1, 2, 3};
     change_parameter["tao"] = {0.001,0.002,0.003,0.004,0.005};
     change_parameter["path_length"] = {3, 6, 9, 12, 15};
     change_parameter["swap_prob"] = {0.6, 0.7, 0.8, 0.9,0.95};
@@ -545,8 +545,9 @@ int main(){
 
 
     // vector<string> X_names = {"time_limit", "request_cnt", "num_nodes", "avg_memory", "tao"};
-    //vector<string> X_names = {"request_cnt"};
-    vector<string> X_names = {"request_cnt","time_limit","fidelity_threshold","avg_memory", "tao"};
+    vector<string> X_names = {"mem_distribution"};
+   
+    //vector<string> X_names = {"request_cnt","time_limit","fidelity_threshold","avg_memory", "tao"};
     // Set EXPERIMENT_X_NAME (for example, EXPERIMENT_X_NAME=tao) to rerun a
     // single sweep without truncating or recomputing the other result files.
     if(const char* selected_x = std::getenv("EXPERIMENT_X_NAME")) {
@@ -633,7 +634,7 @@ int main(){
                     DBG_mem("round_start");
                     string filename = file_path + "input/round_" + to_string(r) + ".input";
                     string topology_model = "waxman";
-                    string memory_distribution_model = "independent";
+                    string memory_distribution_model = "heterogeneous";
                     if(X_name == "mem_vary") {
                         const int mem_vary = (int)input_parameter["mem_vary"];
                         const int num_nodes = (int)default_setting["num_nodes"];
@@ -653,7 +654,8 @@ int main(){
                         }
                     } else if(X_name == "mem_distribution") {
                         static const vector<string> memory_distribution_models = {
-                            "independent", "degree-proportional", "inverse-degree"
+                            "uniform", "degree-proportional", "inverse-degree",
+                            "heterogeneous"
                         };
                         const int distribution_index =
                             (int)input_parameter["mem_distribution"];

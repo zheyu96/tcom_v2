@@ -9,6 +9,19 @@ using namespace std;
 using Path = vector<int>;
 using SDpair = pair<int, int>;
 
+// Audit trail of one schedule that an algorithm actually reserved.  Recording
+// is opt-in (Graph::set_record_accepted_shapes) so that the large-scale
+// experiments keep their original behaviour and memory footprint.
+struct AcceptedShapeRecord {
+    int src = -1;
+    int dst = -1;
+    Shape_vector node_mem_range;
+    vector<int> purify_rounds;
+    double fidelity = 0.0;
+    double success_probability = 0.0;
+    double expected_werner = 0.0;   // Werner(fidelity) * success_probability
+};
+
 
 class Graph {
     int num_nodes;
@@ -37,6 +50,9 @@ class Graph {
 
     string file_name;
     Path get_path(int from, int to);
+    bool record_accepted_shapes_enabled = false;
+    vector<AcceptedShapeRecord> accepted_shape_records;
+    void record_accepted_shape(Shape& shape, double shape_fidelity, double pr);
 public:
     Graph(string filename, int _time_limit, double _swap_prob, int avg_memory, double min_fidelity, double max_fidelity, double _fidelity_threshold, double _A, double _B, double _n, double _T, double _tao,double _Zmin,double _bucket_eps,double _time_eta,double _delta_P=0.0,double _entangle_lambda=0.045,double _entangle_time=0.00025,double _Gamma=0.0044);
     Graph() {}
@@ -64,6 +80,12 @@ public:
     double get_pure_fidelity();
     double get_F_init(int u, int v);
     double get_delta_P();
+    // Physical-layer constants of Sec. III-A, exposed so that reports and
+    // figures quote the values the model actually ran with.
+    double get_Gamma();
+    double get_entangle_lambda();
+    double get_entangle_time();
+    int get_entangle_attempts();      // xi = floor(delta / tau_att)
     const map<pair<int, int>, double>& get_F_init() const;
 
     double get_link_werner(int u,int v);
@@ -89,6 +111,8 @@ public:
     int distance(int src, int dst);
     double get_ini_fid(int u,int v);
     void reserve_node_memory_at(int node_id, int t, int amount);
+    void set_record_accepted_shapes(bool enabled);
+    const vector<AcceptedShapeRecord>& get_accepted_shapes() const;
     void increase_resources(int multi);
     vector<vector<int>> adj_list;
     vector<set<int>> adj_set;

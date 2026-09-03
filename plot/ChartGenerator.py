@@ -207,7 +207,7 @@ class ChartGenerator:
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'runtime':{
-            'request_cnt': (0,40,5,2), 'tao': "auto", 'time_limit': "auto",
+            'request_cnt': (0,10,5,1), 'tao': "auto", 'time_limit': "auto",
             'avg_memory': "auto", 'mem_vary': "auto", 'topo_vary': "auto",
             'mem_distribution': "auto",
             'min_fidelity': "auto", 'fidelity_threshold': "auto",
@@ -357,9 +357,10 @@ class ChartGenerator:
 
         if x_key == "mem_distribution":
             distribution_labels = {
-                0: "Independent",
+                0: "Uniform",
                 1: "Degree-\nProportional",
                 2: "Inverse-\nDegree",
+                3: "Heterogeneous",
             }
             x_labels = [
                 distribution_labels.get(int(float(value)), str(value))
