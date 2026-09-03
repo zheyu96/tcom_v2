@@ -40,6 +40,21 @@ void WernerAlgo::variable_initialize() {
     for (int i = 0; i < (int)requests.size(); i++) {
         oracle_cache[i].resize(get_paths(requests[i].first, requests[i].second).size());
     }
+    request_groups.clear();
+    map<SDpair, size_t> request_group_index;
+    for(int i = 0; i < (int)requests.size(); i++) {
+        auto inserted = request_group_index.emplace(
+            requests[i], request_groups.size());
+        if(inserted.second) request_groups.emplace_back();
+        request_groups[inserted.first->second].push_back(i);
+    }
+    oracle_worker_count = max(1, omp_get_max_threads());
+    if(oracle_worker_count >= 8 &&
+       oracle_worker_count == omp_get_num_procs()) {
+        oracle_worker_count--;
+    }
+    dp_workspaces.clear();
+    dp_workspaces.resize(oracle_worker_count);
     dirty_nodes.clear();
     dirty_alpha_idxs.clear();
 }
@@ -48,66 +63,115 @@ Shape_vector WernerAlgo::separation_oracle(){
     double most_violate=1e9;
     Shape_vector todo_shape;
 
-    for(int i=0;i<(int)requests.size();i++){
-        int src=requests[i].first,dst=requests[i].second;
-        const vector<Path>& cur_paths=get_paths(src,dst);
+    vector<vector<unsigned char>> available(requests.size());
+    for(int i = 0; i < (int)requests.size(); i++)
+        available[i].assign(oracle_cache[i].size(), 0);
 
-        for(int p=0;p<(int)cur_paths.size();p++){
-            auto& cache = oracle_cache[i][p];
+    struct PathTask {
+        const Path* path = nullptr;
+        int path_index = -1;
+        vector<int> request_indices;
+        vector<double> edge_Z;
+        double path_pr = 0.0;
+    };
+    vector<PathTask> tasks;
 
-            // Skip only if: cache valid, alpha[i] unchanged, no dirty beta on path
-            if(cache.valid && !dirty_alpha_idxs.count(i)){
-                bool path_dirty = false;
-                for(int v : cur_paths[p]){
-                    if(dirty_nodes.count(v)){
-                        path_dirty = true;
-                        break;
-                    }
-                }
-                if(!path_dirty){
-                    // alpha & beta both unchanged → cached J is exact
-                    if(cache.path_pr > 0 && cache.best_score < most_violate){
-                        most_violate = cache.best_score;
-                        todo_shape = cache.shape;
-                    }
-                    continue;
+    // Build one task per dirty (unique SD pair, path), not per request.
+    for(const vector<int>& group : request_groups) {
+        if(group.empty()) continue;
+        const int representative = group.front();
+        const int src = requests[representative].first;
+        const int dst = requests[representative].second;
+        const vector<Path>& cur_paths = get_paths(src, dst);
+
+        for(int p = 0; p < (int)cur_paths.size(); p++) {
+            bool path_dirty = false;
+            for(int v : cur_paths[p]) {
+                if(dirty_nodes.count(v)) {
+                    path_dirty = true;
+                    break;
                 }
             }
 
-            // Full recompute (alpha changed, or beta dirty, or first call)
-            int T=dpp.T+5;
-            int n=cur_paths[p].size()+5;
-            DP_table.clear();
-            DP_table.resize(T);
-            for(int ii=0;ii<(int)DP_table.size();ii++){
-                DP_table[ii].resize(n);
-                for(int j=0;j<(int)DP_table[ii].size();j++)
-                    DP_table[ii][j].resize(n);
+            vector<int> recompute;
+            recompute.reserve(group.size());
+            for(int i : group) {
+                const auto& cache = oracle_cache[i][p];
+                if(cache.valid && !dirty_alpha_idxs.count(i) && !path_dirty)
+                    available[i][p] = 1;
+                else
+                    recompute.push_back(i);
             }
+            if(recompute.empty()) continue;
 
+            PathTask task;
+            task.path = &cur_paths[p];
+            task.path_index = p;
+            task.request_indices = std::move(recompute);
+            task.edge_Z.resize(cur_paths[p].size() - 1);
+            for(int edge = 0; edge + 1 < (int)cur_paths[p].size(); edge++) {
+                task.edge_Z[edge] = sqrt(graph.get_edge_W(
+                    cur_paths[p][edge], cur_paths[p][edge + 1])) + dpp.eta;
+            }
+            task.path_pr = graph.path_Pr(cur_paths[p]);
+            tasks.push_back(std::move(task));
+        }
+    }
+
+    #pragma omp parallel for schedule(dynamic, 1) if(tasks.size() > 1) \
+        num_threads(oracle_worker_count)
+    for(int task_index = 0; task_index < (int)tasks.size(); task_index++) {
+        const PathTask& task = tasks[task_index];
+        const Path& path = *task.path;
+        const int T = dpp.T + 5;
+        const int n = path.size() + 5;
+        DPTable& dp_table = dp_workspaces[omp_get_thread_num()];
+        dp_table.resize(T);
+        for(int t = 0; t < (int)dp_table.size(); t++) {
+            dp_table[t].resize(n);
+            for(int a = 0; a < (int)dp_table[t].size(); a++) {
+                dp_table[t][a].resize(n);
+                for(auto& cell : dp_table[t][a]) cell.clear();
+            }
+        }
+
+        for(int t = 1; t <= dpp.T; t++)
+            run_dp_in_t(path, dpp, t, task.edge_Z, dp_table);
+
+        for(int i : task.request_indices) {
             double local_best_J = 1e18;
             ZLabel local_best_label;
-
-            for(int t=1;t<=dpp.T;t++){
-                run_dp_in_t(cur_paths[p],dpp,t);
-                auto cur_val=eval_best_J(0,cur_paths[p].size()-1,t,alpha[i]);
-                if(cur_val.first < local_best_J){
+            for(int t = 1; t <= dpp.T; t++) {
+                auto cur_val = eval_best_J(
+                    0, path.size() - 1, t, alpha[i], dp_table);
+                if(cur_val.first < local_best_J) {
                     local_best_J = cur_val.first;
                     local_best_label = cur_val.second;
                 }
             }
 
-            // Update cache (backtrack while DP_table is still valid)
-            if(local_best_J < 1e18){
-                cache.shape = backtrack_shape(local_best_label, cur_paths[p]);
-                cache.path_pr = graph.path_Pr(cur_paths[p]);
+            if(local_best_J < 1e18) {
+                auto& cache = oracle_cache[i][task.path_index];
+                cache.shape = backtrack_shape(
+                    local_best_label, path, dp_table);
+                cache.path_pr = task.path_pr;
                 cache.best_score = local_best_J / cache.path_pr;
                 cache.valid = true;
+                available[i][task.path_index] = 1;
+            }
+        }
+    }
 
-                if(cache.best_score < most_violate){
-                    most_violate = cache.best_score;
-                    todo_shape = cache.shape;
-                }
+    // Keep the old request-major/path-minor strict-min reduction order.
+    for(int i = 0; i < (int)requests.size(); i++) {
+        const vector<Path>& cur_paths = get_paths(
+            requests[i].first, requests[i].second);
+        for(int p = 0; p < (int)cur_paths.size(); p++) {
+            if(!available[i][p]) continue;
+            const auto& cache = oracle_cache[i][p];
+            if(cache.path_pr > 0 && cache.best_score < most_violate) {
+                most_violate = cache.best_score;
+                todo_shape = cache.shape;
             }
         }
     }
@@ -162,53 +226,61 @@ WernerAlgo::find_min_shape(int src, int dst, double alp) {
     return {best_shape, best_cost};
 }*/
 
-void WernerAlgo::run_dp_in_t(const Path& path, const DPParam& dpp,int t) {
-    const int T = graph.get_time_limit();
+void WernerAlgo::run_dp_in_t(
+    const Path& path, const DPParam& dpp, int t,
+    const vector<double>& edge_Z, DPTable& dp_table) {
     const int n = (int)path.size();
+    const double reject_Z_squared = dpp.Zhat * dpp.Zhat *
+        (1.0 + 16.0 * numeric_limits<double>::epsilon());
 
     // -------- t = 1..T-1 外圈時間迴圈 --------
     for(int a=0;a<n-1;a++)
         for(int b=a+1;b<n;b++){
             int s=path[a],e=path[b];
-            vector<ZLabel> cand;
+            vector<ZLabel>& cand = dp_table[t][a][b];
+            cand.clear();
             //leaf
             if(a+1==b){
-                double Zleaf=sqrt(graph.get_edge_W(s,e)) + dpp.eta;
+                double Zleaf=edge_Z[a];
                 if(Zleaf<=dpp.Zhat){
                     double Bleaf=beta[s][t-1]+beta[e][t-1]+beta[s][t]+beta[e][t];
                     ZLabel L(Bleaf,Zleaf,Op::LEAF,a,b,t,-1);
-                    cand.push_back(L);
+                    cand.push_back(std::move(L));
                 }
             }
             //continue
-            auto pre=DP_table[t-1][a][b];
+            const auto& pre=dp_table[t-1][a][b];
             for(int p_id=0;p_id<pre.size();p_id++){
                 double Zp=pre[p_id].Z+dpp.eta;
                 if(Zp<=dpp.Zhat){
                     double Bp=pre[p_id].B+beta[s][t]+beta[e][t];
                     ZLabel L(Bp,Zp,Op::CONT,a,b,t,-1,p_id);
-                    cand.push_back(L);
+                    cand.push_back(std::move(L));
                 }
             }
             //merge
             for(int k=a+1;k<b;k++){
-                auto L1=DP_table[t-1][a][k],L2=DP_table[t-1][k][b];
+                const auto& L1=dp_table[t-1][a][k];
+                const auto& L2=dp_table[t-1][k][b];
                 if(L1.size()==0||L2.size()==0) continue;
                 for(int lid=0;lid<L1.size();lid++)
                     for(int rid=0;rid<L2.size();rid++){
-                        auto left_seg=L1[lid],right_seg=L2[rid];
-                        double Zp=sqrt((left_seg.Z+dpp.eta)*(left_seg.Z+dpp.eta)+
-                                        (right_seg.Z+dpp.eta)*(right_seg.Z+dpp.eta));
+                        const auto& left_seg=L1[lid];
+                        const auto& right_seg=L2[rid];
+                        const double left_Z = left_seg.Z + dpp.eta;
+                        const double right_Z = right_seg.Z + dpp.eta;
+                        const double Z_squared =
+                            left_Z * left_Z + right_Z * right_Z;
+                        if(Z_squared > reject_Z_squared) continue;
+                        double Zp=sqrt(Z_squared);
                         if(Zp<=dpp.Zhat){
                             double Bp=left_seg.B+right_seg.B+beta[s][t]+beta[e][t];
                             ZLabel L(Bp,Zp,Op::MERGE,a,b,t,k,-1,lid,rid);
-                            cand.push_back(L);
+                            cand.push_back(std::move(L));
                         }
                     }
             }
             bucket_by_Z(cand);
-            // Convert cand (vector<ZLabel>) to vector<shared_ptr<ZLabel>>
-            DP_table[t][a][b]=cand;
         }
 }
 
@@ -219,11 +291,12 @@ void WernerAlgo::pareto_prune_byZ(vector<ZLabel>& cand) {
         return x.B<y.B;
     });
     vector<ZLabel> kept;
+    kept.reserve(cand.size());
     double bestB = INF;
     for (auto& L : cand) {
         if (L.B + 1e-12 < bestB) {
-            kept.push_back(L);
             bestB = L.B;
+            kept.push_back(std::move(L));
         }
     }
     cand.swap(kept);
@@ -233,20 +306,26 @@ void WernerAlgo::bucket_by_Z(vector<ZLabel>& cand) {
     if (cand.empty()) return;
     double q=1+dpp.eps_bucket;
     double invLogQ=1.0/log(q);
-    map<double,ZLabel> buckets;
-    for(auto L:cand){
+    map<double,size_t> buckets;
+    for(size_t index = 0; index < cand.size(); index++){
+        const ZLabel& L = cand[index];
         double k;
         if(L.Z<=dpp.Zmin) k=0.0;
         else{
             k=floor(log(L.Z/dpp.Zmin)*invLogQ+1e-12);
             if(k<0) k=0.0;
-        } 
-        if(buckets.find(k)==buckets.end()||L.B+1e-12<buckets[k].B)
-            buckets[k]=L;
+        }
+        auto existing = buckets.find(k);
+        if(existing == buckets.end()) {
+            buckets.emplace(k, index);
+        } else if(L.B + 1e-12 < cand[existing->second].B) {
+            existing->second = index;
+        }
     }
     vector<ZLabel> bucketed;
-    for(auto L:buckets)
-        bucketed.push_back(L.second);
+    bucketed.reserve(buckets.size());
+    for(const auto& entry : buckets)
+        bucketed.push_back(std::move(cand[entry.second]));
     pareto_prune_byZ(bucketed);
     sort(bucketed.begin(), bucketed.end(), [](const ZLabel& x, const ZLabel& y){
         return x.Z < y.Z;
@@ -254,7 +333,8 @@ void WernerAlgo::bucket_by_Z(vector<ZLabel>& cand) {
     cand.swap(bucketed);
 }
 
-Shape_vector WernerAlgo::backtrack_shape(ZLabel leaf,const vector<int>& path){
+Shape_vector WernerAlgo::backtrack_shape(
+    const ZLabel& leaf, const vector<int>& path, const DPTable& dp_table){
     int left_id=path[leaf.a],right_id=path[leaf.b];
     if(leaf.op==Op::LEAF){
         Shape_vector result;
@@ -263,9 +343,9 @@ Shape_vector WernerAlgo::backtrack_shape(ZLabel leaf,const vector<int>& path){
         return result;
     }
     if(leaf.op==Op::CONT){
-        assert(leaf.parent_id>=0&&leaf.parent_id<DP_table[leaf.t-1][leaf.a][leaf.b].size());
-        ZLabel pre_label=DP_table[leaf.t-1][leaf.a][leaf.b][leaf.parent_id];
-        Shape_vector last_time=backtrack_shape(pre_label,path);
+        assert(leaf.parent_id>=0&&leaf.parent_id<dp_table[leaf.t-1][leaf.a][leaf.b].size());
+        const ZLabel& pre_label=dp_table[leaf.t-1][leaf.a][leaf.b][leaf.parent_id];
+        Shape_vector last_time=backtrack_shape(pre_label,path,dp_table);
         auto & prel=last_time.front().second[0],&prer=last_time.back().second[0];
         assert(last_time.front().first==path[leaf.a]);
         assert(last_time.back().first==path[leaf.b]);
@@ -279,10 +359,10 @@ Shape_vector WernerAlgo::backtrack_shape(ZLabel leaf,const vector<int>& path){
         Shape_vector left_result,right_result,result;
         assert(leaf.k>=0);
         int k_id=path[leaf.k];
-        ZLabel left_leaf=DP_table[leaf.t-1][leaf.a][leaf.k][leaf.left_id];
-        left_result=backtrack_shape(left_leaf,path);
-        ZLabel right_leaf=DP_table[leaf.t-1][leaf.k][leaf.b][leaf.right_id];
-        right_result=backtrack_shape(right_leaf,path);
+        const ZLabel& left_leaf=dp_table[leaf.t-1][leaf.a][leaf.k][leaf.left_id];
+        left_result=backtrack_shape(left_leaf,path,dp_table);
+        const ZLabel& right_leaf=dp_table[leaf.t-1][leaf.k][leaf.b][leaf.right_id];
+        right_result=backtrack_shape(right_leaf,path,dp_table);
         if(DEBUG) {
             assert(left_result.front().first == path[leaf.a]);
             assert(left_result.front().second[0].second == leaf.t - 1);
@@ -310,17 +390,18 @@ Shape_vector WernerAlgo::backtrack_shape(ZLabel leaf,const vector<int>& path){
     // Handle unexpected Op value
     cerr << "[WernerAlgo::backtrack_shape] Warning: Unknown Op value encountered." << std::endl;
 }
-int WernerAlgo::split_dis(int s,int d,WernerAlgo::ZLabel& L){
+int WernerAlgo::split_dis(int s, int d, const WernerAlgo::ZLabel& L){
     if(L.op!=WernerAlgo::Op::MERGE||L.k<0) return 1000000000;
     int mid=(s+d)/2;
     return abs(mid-L.k);
 }
-pair<double,WernerAlgo::ZLabel> WernerAlgo::eval_best_J(int s, int d, int t, double alp){
+pair<double,WernerAlgo::ZLabel> WernerAlgo::eval_best_J(
+    int s, int d, int t, double alp, const DPTable& dp_table){
     double bestJ=1e18;
     int bestdis=1000000000;
     int flag=0;
     ZLabel tmp={};
-    for(auto L:DP_table[t][s][d]){
+    for(const auto& L:dp_table[t][s][d]){
         double J=(alp+L.B)*exp(L.Z*L.Z);
         int dis=split_dis(s,d,L);
         if(J+EPS<bestJ||(fabs(J-bestJ)<=EPS&&dis<bestdis)){

@@ -62,21 +62,25 @@ private:
     vector<map<Shape_vector,double>> x;
     // ===== 全時間 DP 表：L_all[time][a][b] =====
     // 每個 cell 是「非支配候選集」
-    vector<vector<vector<vector<ZLabel>>>> DP_table;
+    using DPTable = vector<vector<vector<vector<ZLabel>>>>;
     // ===== 主流程 =====
     void variable_initialize();
     Shape_vector separation_oracle();
 
     // 在固定 path 上做 Werner DP，填滿 L_all（t=1..T-1）
-    void run_dp_in_t(const Path& path, const DPParam& dpp,int t);
+    void run_dp_in_t(const Path& path, const DPParam& dpp, int t,
+                     const vector<double>& edge_Z,
+                     DPTable& dp_table);
 
     // ===== 基本操作（Pareto / 分桶 / 存儲 / 回溯 / 評分） =====
     void pareto_prune_byZ(vector<ZLabel>& cand);
     void bucket_by_Z(vector<ZLabel>& cand);
 
-    Shape_vector backtrack_shape(ZLabel leaf, const vector<int>& path);
-    int split_dis(int s,int d,WernerAlgo::ZLabel& L);
-    pair<double,WernerAlgo::ZLabel> eval_best_J(int s, int d, int t, double alp);
+    Shape_vector backtrack_shape(const ZLabel& leaf, const vector<int>& path,
+                                 const DPTable& dp_table);
+    int split_dis(int s, int d, const WernerAlgo::ZLabel& L);
+    pair<double,WernerAlgo::ZLabel> eval_best_J(
+        int s, int d, int t, double alp, const DPTable& dp_table);
 
     // --- Oracle cache for incremental separation_oracle ---
     struct OracleCache {
@@ -86,6 +90,11 @@ private:
         bool valid = false;
     };
     vector<vector<OracleCache>> oracle_cache;
+    // Requests with the same SD pair share path frontiers; alpha is applied
+    // only when the finished frontier is scored.
+    vector<vector<int>> request_groups;
+    int oracle_worker_count = 1;
+    vector<DPTable> dp_workspaces;
     set<int> dirty_nodes;
     set<int> dirty_alpha_idxs;  // alpha 被更新的 request indices
 };
