@@ -123,6 +123,7 @@ class ChartGenerator:
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
             'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
             'topo_vary': _LEFT_TOP, 'mem_distribution': _LEFT_TOP,
+            'path_set': _LEFT_TOP,
             'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'hop_count': _RIGHT_TOP,
@@ -132,6 +133,7 @@ class ChartGenerator:
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
             'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
             'topo_vary': _LEFT_TOP, 'mem_distribution': _LEFT_TOP,
+            'path_set': _LEFT_TOP,
             'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'hop_count': _RIGHT_TOP,
@@ -141,6 +143,7 @@ class ChartGenerator:
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
             'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
             'topo_vary': _LEFT_TOP, 'mem_distribution': _LEFT_TOP,
+            'path_set': _LEFT_TOP,
             'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'Zmin': _LEFT_TOP, 'time_eta': _LEFT_TOP, 'bucket_eps': _LEFT_TOP,
@@ -150,6 +153,7 @@ class ChartGenerator:
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
             'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
             'topo_vary': _LEFT_TOP, 'mem_distribution': _LEFT_TOP,
+            'path_set': _LEFT_TOP,
             'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'hop_count': _RIGHT_TOP,
@@ -159,6 +163,7 @@ class ChartGenerator:
             'request_cnt': _LEFT_TOP, 'tao': _RIGHT_TOP, 'time_limit': _LEFT_TOP,
             'avg_memory': _LEFT_TOP, 'mem_vary': _LEFT_TOP,
             'topo_vary': _LEFT_TOP, 'mem_distribution': _LEFT_TOP,
+            'path_set': _LEFT_TOP,
             'min_fidelity': _LEFT_TOP, 'fidelity_threshold': _RIGHT_TOP,
             'swap_prob': _LEFT_TOP, 'entangle_time': _RIGHT_DOWN, 'entangle_prob': _LEFT_DOWN,
             'hop_count': _RIGHT_TOP,
@@ -172,6 +177,7 @@ class ChartGenerator:
             'tao': (0, 90, 5, 6), 'time_limit': (20, 80, 5, 4),
             'avg_memory': (20, 80, 5, 4), 'mem_vary': (30,90,5,6),
             'topo_vary': (0,90,5,4), 'mem_distribution': (0,90,5,4),
+            'path_set': (0,90,5,4),
             'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 95, 5, 6),
             'swap_prob': (10, 80, 5, 4), 'entangle_time': "auto",
             'hop_count':(10,90,5,3),
@@ -182,6 +188,7 @@ class ChartGenerator:
             'tao': (0, 90, 5, 6), 'time_limit': (40, 90, 5, 4),
             'avg_memory': (30, 90, 5, 6), 'mem_vary': "auto",
             'topo_vary': "auto", 'mem_distribution': "auto",
+            'path_set': "auto",
             'min_fidelity': (65, 95, 5, 1), 'fidelity_threshold': (0, 105, 5, 5),
             'swap_prob': (20, 90, 5, 4), 'hop_count':(20,105,5,7),
             'entangle_time': "auto",
@@ -191,6 +198,7 @@ class ChartGenerator:
             'request_cnt': (50, 80, 5, 2), 'tao': (50, 70, 1, 5),
             'time_limit': (45, 70, 1, 5), 'avg_memory': (20, 40, 1, 5),
             'mem_vary': "auto", 'topo_vary': "auto", 'mem_distribution': "auto",
+            'path_set': "auto",
             'min_fidelity': (50, 80, 1, 5), 'fidelity_threshold': (50, 70, 1, 5),
             'swap_prob': "auto", 'entangle_time': "auto", 'entangle_prob': "auto",
             'hop_count': "auto",
@@ -201,6 +209,7 @@ class ChartGenerator:
             'tao': (0,130,5,6), 'time_limit': (50,110,5,5),
             'avg_memory': (35,115,5,7), 'mem_vary': (40,110,5,4),
             'topo_vary': (0,120,5,4), 'mem_distribution': (0,120,5,4),
+            'path_set': (0,120,5,4),
             'min_fidelity': "auto", 'fidelity_threshold': (0,125,5,5),
             'swap_prob': (50,100,5,5), 'hop_count': "auto",
             'entangle_time': "auto",
@@ -209,7 +218,7 @@ class ChartGenerator:
         'runtime':{
             'request_cnt': (0,10,5,1), 'tao': "auto", 'time_limit': "auto",
             'avg_memory': "auto", 'mem_vary': "auto", 'topo_vary': "auto",
-            'mem_distribution': "auto",
+            'mem_distribution': "auto", 'path_set': "auto",
             'min_fidelity': "auto", 'fidelity_threshold': "auto",
             'swap_prob': "auto", 'hop_count': "auto", 'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
@@ -221,6 +230,7 @@ class ChartGenerator:
         "avg_memory": "Average Memory Limit", "mem_vary": "Memory Variation",
         "topo_vary": "Topology Model", "topology_vary": "Topology Model",
         "mem_distribution": "Memory Distribution",
+        "path_set": "Path Set",
         "tao": r"$\it{\delta}$",
         "swap_prob": "Swapping Probability", "fidelity_gain": "Exp. Werner Param. Sum",
         "succ_request_cnt": r"$\#$Exp. Accepted Requests", "pure_fidelity": "Average Final Fidelity",
@@ -367,6 +377,13 @@ class ChartGenerator:
                 for value in x_vals
             ]
 
+        if x_key == "path_set":
+            path_set_labels = {0: "Greedy", 1: "QCAST", 2: "REPS"}
+            x_labels = [
+                path_set_labels.get(int(float(value)), str(value))
+                for value in x_vals
+            ]
+
         # Y 軸處理
         raw_max = max(max(y[i]) for i in visible_indices)
         Ypow = self._pick_engineering_exp(abs(raw_max))
@@ -385,7 +402,7 @@ class ChartGenerator:
         ax1.tick_params(direction="in", bottom=True, top=True, left=True, right=True, pad=10)
 
         is_categorical_bar = x_key in (
-            "topo_vary", "topology_vary", "mem_distribution"
+            "topo_vary", "topology_vary", "mem_distribution", "path_set"
         )
         x_positions = np.arange(len(x_labels), dtype=float)
         categorical_bar_count = len([
@@ -595,6 +612,7 @@ if __name__ == "__main__":
     Xlabels = [
         "request_cnt", "time_limit", "tao",
         "avg_memory", "mem_vary", "topo_vary", "mem_distribution",
+        "path_set",
         "fidelity_threshold", "min_fidelity", "hop_count",
         "swap_prob",
     ]

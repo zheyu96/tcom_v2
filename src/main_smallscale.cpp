@@ -8,7 +8,9 @@
 //   (2) WPFA: WernerAlgo2 with the paper's (W,P) discretization and trimming.
 //
 // The detailed instance is the four-node line used in the response to R1.3.
-// A deterministic random batch then varies link lengths, a common fidelity
+// Four request/path sets are evaluated on each physical instance so their
+// results are paired rather than confounded by different network draws.  A
+// deterministic random batch then varies link lengths, a common fidelity
 // threshold, per-node capacities, and the five/six-slot horizon.  Every draw
 // is retained: instances are never selected according to their observed gap.
 //
@@ -22,6 +24,11 @@
 // experiment drivers use exactly the same audited oracle implementation.
 #define SMALL_SCALE_EXPERIMENT_LIBRARY_ONLY
 #include "main_small_scale.cpp"
+
+#include "Network/PathMethod/PathMethodBase/PathMethod.h"
+#include "Network/PathMethod/Greedy/Greedy.h"
+#include "Network/PathMethod/QCAST/QCAST.h"
+#include "Network/PathMethod/REPS/REPS.h"
 
 #include <random>
 
@@ -43,10 +50,16 @@ struct Options {
 struct TrialSpec {
     string name;
     string kind;
+    string path_set;
     int time_limit = 6;
     vector<int> capacities;
     vector<double> lengths_km;
     double fidelity_threshold = 0.80;
+    vector<SDpair> requests;
+};
+
+struct PathSetSpec {
+    string name;
 };
 
 struct Comparison {
@@ -57,6 +70,9 @@ struct Comparison {
     double gap_pct = 0.0;
     int optimum_purified_requests = 0;
     int wpfa_purified_requests = 0;
+    int requests_with_paths = 0;
+    int candidate_path_count = 0;
+    map<SDpair, vector<Path>> paths;
 };
 
 void print_help(const char* executable) {
@@ -112,6 +128,14 @@ Options parse_options(int argc, char** argv) {
     }
     if(options.detailed_only) options.random_instances = 0;
     return options;
+}
+
+const vector<PathSetSpec>& path_sets() {
+    // These are the three path-set generators used by main.cpp.
+    static const vector<PathSetSpec> sets = {
+        {"Greedy"}, {"QCAST"}, {"REPS"},
+    };
+    return sets;
 }
 
 const vector<SDpair>& reviewer_requests() {
@@ -225,23 +249,73 @@ AlgorithmResult run_wpfa(const Graph& graph,
     return result;
 }
 
+unique_ptr<PathMethod> make_path_method(const string& name) {
+    if(name == "Greedy") return unique_ptr<PathMethod>(new Greedy());
+    if(name == "QCAST") return unique_ptr<PathMethod>(new QCAST());
+    if(name == "REPS") return unique_ptr<PathMethod>(new REPS());
+    throw invalid_argument("unknown path-set generator: " + name);
+}
+
+map<SDpair, vector<Path>> build_main_style_path_set(
+    const Graph& graph,
+    const vector<SDpair>& requests,
+    const string& method_name) {
+    // Match main.cpp: generate paths on a resource-expanded copy, deduplicate
+    // them, then explicitly include every available two-hop alternative.
+    Graph path_graph = graph;
+    path_graph.increase_resources(10);
+    unique_ptr<PathMethod> method = make_path_method(method_name);
+    method->build_paths(path_graph, requests);
+
+    map<SDpair, set<Path>> unique_paths;
+    for(const auto& entry : method->get_paths()) {
+        for(const Path& path : entry.second) {
+            unique_paths[entry.first].insert(path);
+        }
+    }
+    for(const SDpair& request : requests) {
+        const int source = request.first;
+        const int destination = request.second;
+        for(int intermediate : graph.adj_list[source]) {
+            if(graph.adj_set[intermediate].count(destination)) {
+                unique_paths[request].insert(
+                    {source, intermediate, destination});
+            }
+        }
+    }
+
+    map<SDpair, vector<Path>> paths;
+    for(const SDpair& request : requests) {
+        const set<Path>& request_paths = unique_paths[request];
+        paths[request] = vector<Path>(
+            request_paths.begin(), request_paths.end());
+    }
+    return paths;
+}
+
 Comparison compare_trial(const TrialSpec& spec,
                          const string& input_directory) {
     const string graph_path =
         input_directory + "/main_smallscale_" + spec.name + ".input";
     write_trial_graph(graph_path, spec);
     Graph graph = load_trial_graph(graph_path, spec);
-    const vector<SDpair>& requests = reviewer_requests();
-    const map<SDpair, vector<Path>> paths = build_all_paths(graph, requests);
+    const map<SDpair, vector<Path>> paths = build_main_style_path_set(
+        graph, spec.requests, spec.path_set);
 
     Comparison result;
     result.spec = spec;
+    result.paths = paths;
+    for(const SDpair& request : spec.requests) {
+        const int count = (int)paths.at(request).size();
+        result.candidate_path_count += count;
+        if(count > 0) ++result.requests_with_paths;
+    }
     const auto exact_start = chrono::steady_clock::now();
-    result.optimum = solve_exact(graph, requests, paths);
+    result.optimum = solve_exact(graph, spec.requests, paths);
     const auto exact_finish = chrono::steady_clock::now();
     result.exact_runtime_ms = chrono::duration<double, milli>(
         exact_finish - exact_start).count();
-    result.wpfa = run_wpfa(graph, requests, paths);
+    result.wpfa = run_wpfa(graph, spec.requests, paths);
 
     if(result.wpfa.objective > result.optimum.objective + 1e-8) {
         throw runtime_error(
@@ -264,13 +338,25 @@ TrialSpec canonical_trial() {
     // Keep the already-audited R1.3 instance exactly reproducible.  Lengths
     // below are derived from its three stored fidelity ratios using Sec. III-A.
     return {
-        "reviewer_line4", "detailed", 6,
+        "reviewer_line4", "canonical", "", 6,
         {4, 4, 4, 4},
         {length_from_fidelity_ratio(0.92),
          length_from_fidelity_ratio(0.84),
          length_from_fidelity_ratio(0.94)},
-        0.80
+        0.80, {}
     };
+}
+
+TrialSpec apply_path_set(const TrialSpec& physical,
+                         const PathSetSpec& path_set,
+                         bool keep_canonical_name = false) {
+    TrialSpec result = physical;
+    result.path_set = path_set.name;
+    result.requests = reviewer_requests();
+    if(!keep_canonical_name) {
+        result.name += "_" + path_set.name;
+    }
+    return result;
 }
 
 vector<TrialSpec> random_trials(int count, uint32_t seed) {
@@ -291,6 +377,7 @@ vector<TrialSpec> random_trials(int count, uint32_t seed) {
         name << "random_" << setw(3) << setfill('0') << index + 1;
         trial.name = name.str();
         trial.kind = "random";
+        trial.path_set = "";
         trial.time_limit = horizon_distribution(generator);
         for(int node = 0; node < 4; ++node) {
             trial.capacities.push_back(capacity_distribution(generator));
@@ -299,6 +386,7 @@ vector<TrialSpec> random_trials(int count, uint32_t seed) {
             trial.lengths_km.push_back(length_distribution(generator));
         }
         trial.fidelity_threshold = threshold_distribution(generator);
+        trial.requests.clear();
         trials.push_back(std::move(trial));
     }
     return trials;
@@ -306,7 +394,7 @@ vector<TrialSpec> random_trials(int count, uint32_t seed) {
 
 void write_results_header(ofstream& output) {
     output
-        << "instance,kind,seed,nodes,edges,requests,time_limit,"
+        << "instance,kind,path_set,request_pairs,seed,nodes,edges,requests,time_limit,"
         << "capacities_v1_v4,lengths_km_l12_l23_l34,fidelity_threshold,"
         << "epsilon,bucket_eps,max_purification_rounds,algorithm,"
         << "proven_optimal,objective,optimality_gap_pct,accepted_requests,"
@@ -320,8 +408,9 @@ void write_result_row(ofstream& output,
                       uint32_t seed,
                       bool exact) {
     const TrialSpec& spec = result.spec;
-    output << spec.name << ',' << spec.kind << ',' << seed
-           << ",4,3,3," << spec.time_limit << ','
+    output << spec.name << ',' << spec.kind << ',' << spec.path_set << ','
+           << request_pairs_string(spec.requests) << ',' << seed
+           << ",4,3," << spec.requests.size() << ',' << spec.time_limit << ','
            << join_ints(spec.capacities) << ','
            << join_doubles(spec.lengths_km) << ','
            << spec.fidelity_threshold << ','
@@ -363,22 +452,12 @@ double quantile(vector<double> values, double probability) {
     return values[lower] * (1.0 - fraction) + values[upper] * fraction;
 }
 
-void write_batch_summary(const string& filename,
-                         const vector<Comparison>& results,
-                         uint32_t seed) {
-    ofstream output(filename);
-    if(!output) throw runtime_error("cannot create summary: " + filename);
-    output << setprecision(17);
-    output
-        << "random_instances,seed,length_min_km,length_max_km,"
-        << "threshold_min,threshold_max,capacity_min,capacity_max,"
-        << "horizon_min,horizon_max,average_gap_pct,median_gap_pct,"
-        << "p95_gap_pct,maximum_gap_pct,worst_instance,exact_matches,"
-        << "positive_opt_instances,opt_instances_using_purification,"
-        << "mean_exact_runtime_ms,mean_wpfa_runtime_ms\n";
-
+void write_summary_row(ofstream& output,
+                       const string& path_set,
+                       const vector<Comparison>& results,
+                       uint32_t seed) {
     if(results.empty()) {
-        output << "0," << seed
+        output << path_set << ",0," << seed
                << ",6,18,0.80,0.84,4,5,5,6,"
                << "nan,nan,nan,nan,none,0,0,0,nan,nan\n";
         return;
@@ -405,7 +484,7 @@ void write_batch_summary(const string& filename,
         if(result.gap_pct > results[worst].gap_pct) worst = index;
     }
 
-    output << results.size() << ',' << seed
+    output << path_set << ',' << results.size() << ',' << seed
            << ",6,18,0.80,0.84,4,5,5,6,"
            << gap_sum / results.size() << ','
            << quantile(gaps, 0.50) << ',' << quantile(gaps, 0.95) << ','
@@ -416,14 +495,65 @@ void write_batch_summary(const string& filename,
            << wpfa_runtime_sum / results.size() << '\n';
 }
 
+void write_batch_summary(const string& filename,
+                         const vector<Comparison>& results,
+                         uint32_t seed) {
+    ofstream output(filename);
+    if(!output) throw runtime_error("cannot create summary: " + filename);
+    output << setprecision(17);
+    output
+        << "path_set,random_instances,seed,length_min_km,length_max_km,"
+        << "threshold_min,threshold_max,capacity_min,capacity_max,"
+        << "horizon_min,horizon_max,average_gap_pct,median_gap_pct,"
+        << "p95_gap_pct,maximum_gap_pct,worst_instance,exact_matches,"
+        << "positive_opt_instances,opt_instances_using_purification,"
+        << "mean_exact_runtime_ms,mean_wpfa_runtime_ms\n";
+
+    write_summary_row(output, "ALL", results, seed);
+    for(const PathSetSpec& path_set : path_sets()) {
+        vector<Comparison> selected;
+        for(const Comparison& result : results) {
+            if(result.spec.path_set == path_set.name) {
+                selected.push_back(result);
+            }
+        }
+        write_summary_row(output, path_set.name, selected, seed);
+    }
+}
+
 CaseSpec canonical_case_spec(const TrialSpec& trial) {
     return {
         trial.name, 4, trial.time_limit, 4,
         {{0, 1, fidelity_ratio_from_length(trial.lengths_km[0])},
          {1, 2, fidelity_ratio_from_length(trial.lengths_km[1])},
          {2, 3, fidelity_ratio_from_length(trial.lengths_km[2])}},
-        reviewer_requests()
+        trial.requests
     };
+}
+
+string line_path_string(const SDpair& request) {
+    ostringstream output;
+    const int step = request.first <= request.second ? 1 : -1;
+    for(int node = request.first;; node += step) {
+        if(node != request.first) output << '-';
+        output << node + 1;
+        if(node == request.second) break;
+    }
+    return output.str();
+}
+
+void write_path_set_manifest(const string& filename) {
+    ofstream output(filename);
+    if(!output) throw runtime_error("cannot create path-set manifest: " + filename);
+    output << "path_set,request_index,request,unique_line_path\n";
+    for(const PathSetSpec& path_set : path_sets()) {
+        for(size_t index = 0; index < path_set.requests.size(); ++index) {
+            const SDpair request = path_set.requests[index];
+            output << path_set.name << ',' << index + 1 << ','
+                   << request.first + 1 << '-' << request.second + 1 << ','
+                   << line_path_string(request) << '\n';
+        }
+    }
 }
 
 void write_detailed_artifacts(const string& answer_directory,
@@ -484,6 +614,24 @@ void print_comparison(const Comparison& result) {
          << result.wpfa_purified_requests << '\n';
 }
 
+void print_summary_line(const string& label,
+                        const vector<Comparison>& results) {
+    if(results.empty()) return;
+    double gap_sum = 0.0;
+    int matches = 0;
+    size_t worst = 0;
+    for(size_t index = 0; index < results.size(); ++index) {
+        gap_sum += results[index].gap_pct;
+        if(is_exact_match(results[index])) ++matches;
+        if(results[index].gap_pct > results[worst].gap_pct) worst = index;
+    }
+    cout << "  " << label << ": average gap="
+         << gap_sum / results.size()
+         << "%, maximum gap=" << results[worst].gap_pct
+         << "% (" << results[worst].spec.name << ')'
+         << ", exact matches=" << matches << '/' << results.size() << '\n';
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -496,6 +644,8 @@ int main(int argc, char** argv) {
             answer_directory + "/main_smallscale_results.csv";
         const string summary_path =
             answer_directory + "/main_smallscale_summary.csv";
+        const string path_set_path =
+            answer_directory + "/main_smallscale_path_sets.csv";
 
         ofstream results_csv(results_path);
         if(!results_csv) {
@@ -503,19 +653,25 @@ int main(int argc, char** argv) {
         }
         results_csv << setprecision(17);
         write_results_header(results_csv);
+        write_path_set_manifest(path_set_path);
 
         cout << fixed << setprecision(6)
              << "Four-node line: exact OPT versus WPFA\n"
-             << "requests=(1,3),(1,4),(2,4), epsilon="
-             << SMALL_SCALE_EPSILON
+             << "path_sets=" << path_sets().size()
+             << ", epsilon=" << SMALL_SCALE_EPSILON
              << ", bucket_eps=" << SMALL_SCALE_BUCKET_EPS << '\n';
 
-        const Comparison detailed = compare_trial(
-            canonical_trial(), input_directory);
-        write_result_row(results_csv, detailed, options.seed, true);
-        write_result_row(results_csv, detailed, options.seed, false);
+        Comparison detailed;
+        for(size_t index = 0; index < path_sets().size(); ++index) {
+            const TrialSpec trial = apply_path_set(
+                canonical_trial(), path_sets()[index], index == 0);
+            Comparison result = compare_trial(trial, input_directory);
+            write_result_row(results_csv, result, options.seed, true);
+            write_result_row(results_csv, result, options.seed, false);
+            print_comparison(result);
+            if(index == 0) detailed = std::move(result);
+        }
         write_detailed_artifacts(answer_directory, detailed);
-        print_comparison(detailed);
 
         vector<SelectionEntry> detailed_opt = exact_entries(detailed.optimum);
         vector<SelectionEntry> detailed_wpfa =
@@ -527,38 +683,36 @@ int main(int argc, char** argv) {
              << '\n';
 
         vector<Comparison> random_results;
-        for(const TrialSpec& trial : random_trials(
+        for(const TrialSpec& physical : random_trials(
                 options.random_instances, options.seed)) {
-            Comparison result = compare_trial(trial, input_directory);
-            write_result_row(results_csv, result, options.seed, true);
-            write_result_row(results_csv, result, options.seed, false);
-            print_comparison(result);
-            random_results.push_back(std::move(result));
+            for(const PathSetSpec& path_set : path_sets()) {
+                const TrialSpec trial = apply_path_set(physical, path_set);
+                Comparison result = compare_trial(trial, input_directory);
+                write_result_row(results_csv, result, options.seed, true);
+                write_result_row(results_csv, result, options.seed, false);
+                print_comparison(result);
+                random_results.push_back(std::move(result));
+            }
         }
         results_csv.close();
 
         write_batch_summary(summary_path, random_results, options.seed);
         if(!random_results.empty()) {
-            double gap_sum = 0.0;
-            int matches = 0;
-            size_t worst = 0;
-            for(size_t index = 0; index < random_results.size(); ++index) {
-                gap_sum += random_results[index].gap_pct;
-                if(is_exact_match(random_results[index])) ++matches;
-                if(random_results[index].gap_pct >
-                   random_results[worst].gap_pct) {
-                    worst = index;
+            cout << "Random-batch summaries (paired physical instances):\n";
+            print_summary_line("ALL", random_results);
+            for(const PathSetSpec& path_set : path_sets()) {
+                vector<Comparison> selected;
+                for(const Comparison& result : random_results) {
+                    if(result.spec.path_set == path_set.name) {
+                        selected.push_back(result);
+                    }
                 }
+                print_summary_line(path_set.name, selected);
             }
-            cout << "Random-batch summary: average gap="
-                 << gap_sum / random_results.size()
-                 << "%, maximum gap=" << random_results[worst].gap_pct
-                 << "% (" << random_results[worst].spec.name << ')'
-                 << ", exact matches=" << matches << '/'
-                 << random_results.size() << '\n';
         }
         cout << "Results: " << results_path << '\n'
              << "Summary: " << summary_path << '\n'
+             << "Path sets: " << path_set_path << '\n'
              << "Detailed schedules and numerology: "
              << answer_directory << "/main_smallscale_*\n";
         return 0;

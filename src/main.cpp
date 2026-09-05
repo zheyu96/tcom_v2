@@ -410,6 +410,10 @@ int main(){
     // total memory budget in the dedicated mem_distribution experiment;
     // every other X axis retains the legacy offsets generated from mem_vary.
     default_setting["mem_distribution"] = 0;
+    // path_set: 0=Greedy, 1=QCAST, 2=REPS.  The dedicated path_set
+    // experiment keeps each round's graph and requests fixed and changes only
+    // the candidate-path generator.
+    default_setting["path_set"] = 0;
     default_setting["tao"] = 0.002;
     default_setting["path_length"] = 3;
     // With threshold 0.8, max_fidelity=0.99 leaves a controlled set of
@@ -446,6 +450,7 @@ int main(){
     change_parameter["mem_vary"] = {1, 2, 3, 4, 5};
     change_parameter["topo_vary"] = {0, 1, 2};
     change_parameter["mem_distribution"] = {0, 1, 2, 3};
+    change_parameter["path_set"] = {0, 1, 2};
     change_parameter["tao"] = {0.001,0.002,0.003,0.004,0.005};
     change_parameter["path_length"] = {3, 6, 9, 12, 15};
     change_parameter["swap_prob"] = {0.6, 0.7, 0.8, 0.9,0.95};
@@ -545,7 +550,7 @@ int main(){
 
 
     // vector<string> X_names = {"time_limit", "request_cnt", "num_nodes", "avg_memory", "tao"};
-    vector<string> X_names = {"mem_distribution"};
+    vector<string> X_names = {"path_set"};
    
     //vector<string> X_names = {"request_cnt","time_limit","fidelity_threshold","avg_memory", "tao"};
     // Set EXPERIMENT_X_NAME (for example, EXPERIMENT_X_NAME=tao) to rerun a
@@ -635,6 +640,21 @@ int main(){
                     string filename = file_path + "input/round_" + to_string(r) + ".input";
                     string topology_model = "waxman";
                     string memory_distribution_model = "heterogeneous";
+                    string path_set_model = path_method->get_name();
+                    if(X_name == "path_set") {
+                        static const vector<string> path_set_models = {
+                            "Greedy", "QCAST", "REPS"
+                        };
+                        const int path_set_index =
+                            (int)input_parameter["path_set"];
+                        if(path_set_index < 0 ||
+                           path_set_index >= (int)path_set_models.size()) {
+                            throw runtime_error(
+                                "invalid path_set index "
+                                + to_string(path_set_index));
+                        }
+                        path_set_model = path_set_models[path_set_index];
+                    }
                     if(X_name == "mem_vary") {
                         const int mem_vary = (int)input_parameter["mem_vary"];
                         const int num_nodes = (int)default_setting["num_nodes"];
@@ -808,12 +828,12 @@ int main(){
                     path_graph.increase_resources(10);
                     DBG_HERE("after increase_resources");
                     PathMethod *new_path_method;
-                    if(path_method->get_name() == "Greedy") new_path_method = new Greedy();
-                    else if(path_method->get_name() == "QCAST") new_path_method = new QCAST();
-                    else if(path_method->get_name() == "REPS") new_path_method = new REPS();
+                    if(path_set_model == "Greedy") new_path_method = new Greedy();
+                    else if(path_set_model == "QCAST") new_path_method = new QCAST();
+                    else if(path_set_model == "REPS") new_path_method = new REPS();
                     else {
-                        cerr << "unknown path method" << endl;
-                        assert(false);
+                        throw runtime_error(
+                            "unknown path-set generator: " + path_set_model);
                     }
 
                     DBG_HERE("before build_paths");
@@ -872,7 +892,7 @@ int main(){
                     }
 
                     sum_has_path += has_path;
-                    cerr << "Path method: " << path_method->get_name() << "\n";
+                    cerr << "Path set: " << path_set_model << "\n";
                     cerr << "Request cnt: " << request_cnt << "\n";
                     cerr << "Has Path cnt: " << has_path << "\n";
                     cerr << "Avg path length = " << path_len / (double)path_cnt << "\n";
