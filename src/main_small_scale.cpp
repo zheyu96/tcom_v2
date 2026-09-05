@@ -1318,6 +1318,7 @@ void write_certificate(ofstream& output,
 
 } // namespace
 
+#ifndef SMALL_SCALE_EXPERIMENT_LIBRARY_ONLY
 int main() {
     try {
         const string data_directory = locate_data_directory();
@@ -1460,3 +1461,4 @@ int main() {
         return 1;
     }
 }
+#endif

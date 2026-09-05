@@ -545,8 +545,8 @@ int main(){
 
 
     // vector<string> X_names = {"time_limit", "request_cnt", "num_nodes", "avg_memory", "tao"};
-    //vector<string> X_names = {"mem_distribution"};
-    vector<string> X_names={"request_cnt"};
+    vector<string> X_names = {"mem_distribution"};
+   
     //vector<string> X_names = {"request_cnt","time_limit","fidelity_threshold","avg_memory", "tao"};
     // Set EXPERIMENT_X_NAME (for example, EXPERIMENT_X_NAME=tao) to rerun a
     // single sweep without truncating or recomputing the other result files.
@@ -579,8 +579,8 @@ int main(){
 
     vector<PathMethod*> path_methods;
     path_methods.emplace_back(new Greedy());
-     path_methods.emplace_back(new QCAST());
-    path_methods.emplace_back(new REPS()); 
+    /* path_methods.emplace_back(new QCAST());
+    path_methods.emplace_back(new REPS()); */
     for(PathMethod *path_method : path_methods) {
 
         for(string X_name : X_names) {
