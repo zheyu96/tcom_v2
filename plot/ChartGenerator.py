@@ -378,7 +378,11 @@ class ChartGenerator:
             ]
 
         if x_key == "path_set":
-            path_set_labels = {0: "Greedy", 1: "QCAST", 2: "REPS"}
+            path_set_labels = {
+                0: "K-Shortest\nPath",
+                1: "QCAST",
+                2: "REPS",
+            }
             x_labels = [
                 path_set_labels.get(int(float(value)), str(value))
                 for value in x_vals
@@ -480,7 +484,12 @@ class ChartGenerator:
         )
 
         # 自動 Y 軸刻度
-        cfg = self._Y_INTERVALS[y_key].get(x_key, "auto")
+        is_small_scale = os.path.basename(dataName).startswith("SmallScale_")
+        cfg = (
+            "auto"
+            if is_small_scale
+            else self._Y_INTERVALS[y_key].get(x_key, "auto")
+        )
         manual_y_range = cfg != "auto"
         if cfg == "auto":
             Ystart, Yend, Yinterval = self._auto_y_range(min_data, max_data, target_ticks=7, padding=0.05)
@@ -538,11 +547,12 @@ class ChartGenerator:
             else: return f"{val:.2f}"
         ax1.yaxis.set_major_formatter(FuncFormatter(_fmt_y))
 
-        x_tick_fontsize = (
-            self._FONT_SIZE_BASE - 10
-            if x_key == "mem_distribution"
-            else self._FONT_SIZE_BASE + 4
-        )
+        if x_key == "mem_distribution":
+            x_tick_fontsize = self._FONT_SIZE_BASE - 10
+        elif x_key == "path_set":
+            x_tick_fontsize = self._FONT_SIZE_BASE - 4
+        else:
+            x_tick_fontsize = self._FONT_SIZE_BASE + 4
         plt.xticks(
             ticks=range(len(x_labels)), labels=x_labels,
             fontsize=x_tick_fontsize
@@ -554,6 +564,8 @@ class ChartGenerator:
         ax1.yaxis.set_label_coords(-0.16, 0.45)
         if x_key == "mem_distribution":
             ax1.xaxis.set_label_coords(0.5, -0.31)
+        elif x_key == "path_set":
+            ax1.xaxis.set_label_coords(0.5, -0.29)
         else:
             ax1.xaxis.set_label_coords(0.45, -0.2)
 
@@ -620,12 +632,24 @@ if __name__ == "__main__":
         "fidelity_gain", "succ_request_cnt", "pure_fidelity",
         "actual_req_cnt", "runtime",
     ]
-    PathNames = ["Greedy"]
+    datasets = {
+        "Greedy": (Xlabels, Ylabels),
+        "SmallScale": (
+            [
+                "request_cnt", "fidelity_threshold", "tao",
+                "swap_prob", "avg_memory",
+            ],
+            [
+                "fidelity_gain", "succ_request_cnt",
+                "actual_req_cnt", "runtime",
+            ],
+        ),
+    }
 
     OVERRIDE_LABEL_EVERY = None
 
-    for Path in PathNames:
-        for X in Xlabels:
-            for Y in Ylabels:
+    for Path, (dataset_xlabels, dataset_ylabels) in datasets.items():
+        for X in dataset_xlabels:
+            for Y in dataset_ylabels:
                 fname = f"{Path}_{X}_{Y}.ans"
                 ChartGenerator(fname, X, Y, label_every=OVERRIDE_LABEL_EVERY)

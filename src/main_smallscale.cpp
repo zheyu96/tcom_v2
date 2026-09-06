@@ -1,105 +1,116 @@
-// Reviewer-facing small-scale optimality-gap experiment.
-//
-// This driver intentionally compares only two methods on the same discrete-
-// time model:
-//   (1) OPT: exhaustive enumeration of every path schedule, pumping choice,
-//       operation timing, and admissible subset, followed by exact packing
-//       under node-time memory constraints; and
-//   (2) WPFA: WernerAlgo2 with the paper's (W,P) discretization and trimming.
-//
-// The detailed instance is the four-node line used in the response to R1.3.
-// Four request/path sets are evaluated on each physical instance so their
-// results are paired rather than confounded by different network draws.  A
-// deterministic random batch then varies link lengths, a common fidelity
-// threshold, per-node capacities, and the five/six-slot horizon.  Every draw
-// is retained: instances are never selected according to their observed gap.
+// Small-scale parameter sweeps using the same algorithm order and metrics as
+// main.cpp. The exhaustive solver from main_small_scale.cpp is retained as an
+// independent reference, while every heuristic receives the same candidate
+// path set and deterministic three/four-node physical instances.
 //
 // Build and run from src/:
 //   make main_smallscale
 //   ./main_smallscale
-//   ./main_smallscale --instances 30 --seed 20260906
+//   ./main_smallscale --sweep request_cnt
+//   ./main_smallscale --no-exact
 
-// The exact oracle and its reporting helpers live in main_small_scale.cpp.
-// Suppressing that file's standalone entry point lets both historical and new
-// experiment drivers use exactly the same audited oracle implementation.
 #define SMALL_SCALE_EXPERIMENT_LIBRARY_ONLY
 #include "main_small_scale.cpp"
 
-#include "Network/PathMethod/PathMethodBase/PathMethod.h"
-#include "Network/PathMethod/Greedy/Greedy.h"
-#include "Network/PathMethod/QCAST/QCAST.h"
-#include "Network/PathMethod/REPS/REPS.h"
+#include "Algorithm/EFiRAP/EFiRAP.h"
+#include "Algorithm/EFiRAP_longtime/EFiRAP_longtime.h"
+#include "Algorithm/WernerAlgo3/WernerAlgo3.h"
 
-#include <random>
+// WernerAlgo3.h leaks this legacy macro. Do not let it change the driver's
+// result and CSV types.
+#ifdef double
+#undef double
+#endif
+
+#include "Network/PathMethod/Greedy/Greedy.h"
+
+#include <memory>
+#include <set>
 
 using namespace std;
 
 namespace {
 
-constexpr uint32_t DEFAULT_RANDOM_SEED = 20260906u;
-constexpr int DEFAULT_RANDOM_INSTANCES = 30;
-constexpr double MATCH_TOLERANCE = 1e-9;
-constexpr double LINK_GAMMA = 0.0044;
+constexpr int DEFAULT_REQUEST_COUNT = 4;
+constexpr int DEFAULT_MEMORY = 4;
+constexpr double DEFAULT_FIDELITY_THRESHOLD = 0.80;
+constexpr double DEFAULT_SLOT_DURATION = 0.002;
+constexpr double DEFAULT_SWAP_PROBABILITY = 0.90;
+constexpr double MAIN_STYLE_EPSILON = 0.55;
+constexpr double MAIN_STYLE_GRAPH_BUCKET_EPS = 0.01;
+constexpr double MAIN_STYLE_WPFA_BUCKET_EPS = 0.001;
+
+const vector<string> SWEEP_NAMES = {
+    "request_cnt",
+    "fidelity_threshold",
+    "tao",
+    "swap_prob",
+    "avg_memory",
+};
+
+const vector<string> METRIC_NAMES = {
+    "fidelity_gain",
+    "succ_request_cnt",
+    "actual_req_cnt",
+    "runtime",
+};
 
 struct Options {
-    int random_instances = DEFAULT_RANDOM_INSTANCES;
-    uint32_t seed = DEFAULT_RANDOM_SEED;
-    bool detailed_only = false;
+    string selected_sweep;
+    bool run_exact = true;
+};
+
+struct TopologySpec {
+    string name;
+    int node_count;
+    int time_limit;
+    vector<EdgeSpec> edges;
+    vector<SDpair> request_pool;
 };
 
 struct TrialSpec {
     string name;
-    string kind;
-    string path_set;
-    int time_limit = 6;
-    vector<int> capacities;
-    vector<double> lengths_km;
-    double fidelity_threshold = 0.80;
+    string sweep;
+    double parameter_value = 0.0;
+    string topology;
+    int node_count = 0;
+    int time_limit = 0;
+    int memory_per_node = DEFAULT_MEMORY;
+    double fidelity_threshold = DEFAULT_FIDELITY_THRESHOLD;
+    double slot_duration = DEFAULT_SLOT_DURATION;
+    double swap_probability = DEFAULT_SWAP_PROBABILITY;
+    vector<EdgeSpec> edges;
     vector<SDpair> requests;
 };
 
-struct PathSetSpec {
-    string name;
+struct TrialResult {
+    TrialSpec spec;
+    map<SDpair, vector<Path>> paths;
+    bool has_exact = false;
+    ExactResult optimum;
+    double exact_runtime_ms = 0.0;
+    vector<AlgorithmResult> algorithms;
 };
 
-struct Comparison {
-    TrialSpec spec;
-    ExactResult optimum;
-    AlgorithmResult wpfa;
-    double exact_runtime_ms = 0.0;
-    double gap_pct = 0.0;
-    int optimum_purified_requests = 0;
-    int wpfa_purified_requests = 0;
-    int requests_with_paths = 0;
-    int candidate_path_count = 0;
-    map<SDpair, vector<Path>> paths;
+struct Aggregate {
+    int samples = 0;
+    double fidelity_gain = 0.0;
+    double expected_requests = 0.0;
+    double accepted_requests = 0.0;
+    double runtime_seconds = 0.0;
 };
 
 void print_help(const char* executable) {
     cout << "Usage: " << executable << " [options]\n"
-         << "  --instances N   random four-node instances (default: 30)\n"
-         << "  --seed N        deterministic random seed (default: 20260906)\n"
-         << "  --detailed-only run only the canonical reviewer instance\n"
-         << "  --help          show this message\n";
+         << "  --sweep NAME  run only request_cnt, fidelity_threshold, tao, "
+            "swap_prob, or avg_memory\n"
+         << "  --no-exact    skip the exhaustive OPT reference\n"
+         << "  --help        show this message\n";
 }
 
-int parse_nonnegative_int(const string& text, const string& option) {
-    size_t consumed = 0;
-    const long long value = stoll(text, &consumed);
-    if(consumed != text.size() || value < 0 || value > 1000000) {
-        throw invalid_argument("invalid value for " + option + ": " + text);
-    }
-    return (int)value;
-}
-
-uint32_t parse_seed(const string& text) {
-    size_t consumed = 0;
-    const unsigned long long value = stoull(text, &consumed);
-    if(consumed != text.size() ||
-       value > numeric_limits<uint32_t>::max()) {
-        throw invalid_argument("invalid value for --seed: " + text);
-    }
-    return (uint32_t)value;
+bool is_known_sweep(const string& name) {
+    return find(SWEEP_NAMES.begin(), SWEEP_NAMES.end(), name) !=
+           SWEEP_NAMES.end();
 }
 
 Options parse_options(int argc, char** argv) {
@@ -109,527 +120,421 @@ Options parse_options(int argc, char** argv) {
         if(option == "--help") {
             print_help(argv[0]);
             exit(0);
-        } else if(option == "--detailed-only") {
-            options.detailed_only = true;
-        } else if(option == "--instances" || option == "--seed") {
-            if(index + 1 >= argc) {
-                throw invalid_argument("missing value after " + option);
-            }
-            const string value = argv[++index];
-            if(option == "--instances") {
-                options.random_instances =
-                    parse_nonnegative_int(value, option);
-            } else {
-                options.seed = parse_seed(value);
-            }
-        } else {
-            throw invalid_argument("unknown option: " + option);
         }
+        if(option == "--no-exact") {
+            options.run_exact = false;
+            continue;
+        }
+        if(option == "--sweep") {
+            if(index + 1 >= argc) {
+                throw invalid_argument("missing value after --sweep");
+            }
+            options.selected_sweep = argv[++index];
+            if(!is_known_sweep(options.selected_sweep)) {
+                throw invalid_argument(
+                    "unknown sweep: " + options.selected_sweep);
+            }
+            continue;
+        }
+        throw invalid_argument("unknown option: " + option);
     }
-    if(options.detailed_only) options.random_instances = 0;
     return options;
 }
 
-const vector<PathSetSpec>& path_sets() {
-    // These are the three path-set generators used by main.cpp.
-    static const vector<PathSetSpec> sets = {
-        {"Greedy"}, {"QCAST"}, {"REPS"},
+const vector<TopologySpec>& topologies() {
+    // Ratios are mapped by Graph into [0.80, 0.99]. They remain fixed for all
+    // sweeps, and the configured link-fidelity lower bound stays at 0.80.
+    static const vector<TopologySpec> values = {
+        {
+            "line3", 3, 5,
+            {{0, 1, 0.90}, {1, 2, 0.82}},
+            {{0, 2}, {0, 2}, {0, 1}, {1, 2}, {0, 2}, {1, 2}},
+        },
+        {
+            "diamond4", 4, 5,
+            {{0, 1, 0.86}, {1, 3, 0.95},
+             {0, 2, 0.95}, {2, 3, 0.80}},
+            {{0, 3}, {0, 3}, {1, 2}, {0, 2}, {1, 3}, {0, 3}},
+        },
     };
-    return sets;
+    return values;
 }
 
-const vector<SDpair>& reviewer_requests() {
-    static const vector<SDpair> requests = {
-        {0, 2}, // R1=(1,3)
-        {0, 3}, // R2=(1,4)
-        {1, 3}, // R3=(2,4)
+const vector<double>& sweep_values(const string& sweep) {
+    static const map<string, vector<double>> values = {
+        {"request_cnt", {2, 3, 4, 5, 6}},
+        {"fidelity_threshold", {0.76, 0.78, 0.80, 0.82, 0.84}},
+        {"tao", {0.0010, 0.0015, 0.0020, 0.0025, 0.0030}},
+        {"swap_prob", {0.70, 0.75, 0.80, 0.85, 0.90}},
+        {"avg_memory", {2, 3, 4, 5, 6}},
     };
-    return requests;
+    return values.at(sweep);
 }
 
-double fidelity_ratio_from_length(double length_km) {
-    // Graph reads a normalized fidelity ratio and reconstructs F_e.  Invert
-    // that input convention after applying the paper's distance model.
-    const double werner = exp(-LINK_GAMMA * length_km);
-    const double fidelity = Purification::werner_to_fidelity(werner);
-    const double ratio =
-        (fidelity - MIN_LINK_FIDELITY) /
-        (MAX_LINK_FIDELITY - MIN_LINK_FIDELITY);
-    if(ratio < 0.0 || ratio > 1.0) {
-        throw runtime_error(
-            "sampled link length falls outside Graph's fidelity range");
-    }
-    return ratio;
-}
-
-double length_from_fidelity_ratio(double ratio) {
-    const double fidelity =
-        ratio * (MAX_LINK_FIDELITY - MIN_LINK_FIDELITY) +
-        MIN_LINK_FIDELITY;
-    return -log(Purification::fidelity_to_werner(fidelity)) / LINK_GAMMA;
-}
-
-string join_ints(const vector<int>& values) {
+string value_token(double value) {
     ostringstream output;
-    for(size_t index = 0; index < values.size(); ++index) {
-        if(index) output << ';';
-        output << values[index];
-    }
-    return output.str();
+    output << fixed << setprecision(6) << value;
+    string token = output.str();
+    while(token.size() > 1 && token.back() == '0') token.pop_back();
+    if(!token.empty() && token.back() == '.') token.pop_back();
+    replace(token.begin(), token.end(), '.', 'p');
+    return token;
 }
 
-string join_doubles(const vector<double>& values) {
-    ostringstream output;
-    output << setprecision(10);
-    for(size_t index = 0; index < values.size(); ++index) {
-        if(index) output << ';';
-        output << values[index];
+TrialSpec make_trial(const TopologySpec& topology,
+                     const string& sweep,
+                     double value) {
+    TrialSpec trial;
+    trial.sweep = sweep;
+    trial.parameter_value = value;
+    trial.topology = topology.name;
+    trial.node_count = topology.node_count;
+    trial.time_limit = topology.time_limit;
+    trial.edges = topology.edges;
+
+    int request_count = DEFAULT_REQUEST_COUNT;
+    if(sweep == "request_cnt") {
+        request_count = (int)llround(value);
+    } else if(sweep == "fidelity_threshold") {
+        trial.fidelity_threshold = value;
+    } else if(sweep == "tao") {
+        trial.slot_duration = value;
+    } else if(sweep == "swap_prob") {
+        trial.swap_probability = value;
+    } else if(sweep == "avg_memory") {
+        trial.memory_per_node = (int)llround(value);
+    } else {
+        throw invalid_argument("unknown sweep: " + sweep);
     }
-    return output.str();
+
+    if(request_count < 1 ||
+       request_count > (int)topology.request_pool.size()) {
+        throw logic_error("request count is outside the small-scale pool");
+    }
+    trial.requests.assign(topology.request_pool.begin(),
+                          topology.request_pool.begin() + request_count);
+    trial.name = sweep + "_" + value_token(value) + "_" + topology.name;
+    return trial;
 }
 
 void write_trial_graph(const string& filename, const TrialSpec& spec) {
-    if(spec.capacities.size() != 4 || spec.lengths_km.size() != 3) {
-        throw logic_error("a small-scale line trial must have 4 capacities "
-                          "and 3 link lengths");
-    }
     ofstream output(filename);
-    if(!output) throw runtime_error("cannot write graph file: " + filename);
-    output << "4\n";
-    for(int capacity : spec.capacities) output << capacity << '\n';
-    output << "3\n" << setprecision(17);
-    for(int link = 0; link < 3; ++link) {
-        output << link << ' ' << link + 1 << ' '
-               << fidelity_ratio_from_length(spec.lengths_km[link]) << '\n';
+    if(!output) throw runtime_error("cannot write graph: " + filename);
+    output << spec.node_count << '\n';
+    // Graph adds memory_per_node to each zero stored in the input file.
+    for(int node = 0; node < spec.node_count; ++node) output << "0\n";
+    output << spec.edges.size() << '\n' << setprecision(17);
+    for(const EdgeSpec& edge : spec.edges) {
+        output << edge.left << ' ' << edge.right << ' '
+               << edge.fidelity_ratio << '\n';
     }
 }
 
 Graph load_trial_graph(const string& filename, const TrialSpec& spec) {
-    // Node capacities are stored directly in the graph file, hence avg=0.
     return Graph(
-        filename, spec.time_limit, SWAP_PROBABILITY, 0,
-        MIN_LINK_FIDELITY, MAX_LINK_FIDELITY, spec.fidelity_threshold,
-        DECOHERENCE_A, DECOHERENCE_B, DECOHERENCE_N, DECOHERENCE_T,
-        SLOT_DURATION, Z_MIN, SMALL_SCALE_BUCKET_EPS, TIME_ETA, DELTA_P,
-        ENTANGLE_LAMBDA, ENTANGLE_TIME, LINK_GAMMA);
+        filename, spec.time_limit, spec.swap_probability,
+        spec.memory_per_node, MIN_LINK_FIDELITY, MAX_LINK_FIDELITY,
+        spec.fidelity_threshold, DECOHERENCE_A, DECOHERENCE_B,
+        DECOHERENCE_N, DECOHERENCE_T, spec.slot_duration, Z_MIN,
+        MAIN_STYLE_GRAPH_BUCKET_EPS, TIME_ETA, DELTA_P,
+        ENTANGLE_LAMBDA, ENTANGLE_TIME);
 }
 
-int count_purified(const vector<pair<SDpair, Candidate>>& selected) {
-    int count = 0;
-    for(const auto& item : selected) {
-        if(any_of(item.second.purify_rounds.begin(),
-                  item.second.purify_rounds.end(),
-                  [](int rounds) { return rounds > 0; })) {
-            ++count;
-        }
-    }
-    return count;
-}
-
-int count_purified(const vector<AcceptedShapeRecord>& selected) {
-    int count = 0;
-    for(const AcceptedShapeRecord& item : selected) {
-        if(any_of(item.purify_rounds.begin(), item.purify_rounds.end(),
-                  [](int rounds) { return rounds > 0; })) {
-            ++count;
-        }
-    }
-    return count;
-}
-
-AlgorithmResult run_wpfa(const Graph& graph,
-                         const vector<SDpair>& requests,
-                         const map<SDpair, vector<Path>>& paths) {
-    unique_ptr<WernerAlgo2> algorithm(new WernerAlgo2(
-        graph, requests, paths,
-        SMALL_SCALE_EPSILON, SMALL_SCALE_BUCKET_EPS));
-    algorithm->set_detailed_logging(false);
-    AlgorithmResult result = run_algorithm(std::move(algorithm));
-    result.name = "WPFA";
-    return result;
-}
-
-unique_ptr<PathMethod> make_path_method(const string& name) {
-    if(name == "Greedy") return unique_ptr<PathMethod>(new Greedy());
-    if(name == "QCAST") return unique_ptr<PathMethod>(new QCAST());
-    if(name == "REPS") return unique_ptr<PathMethod>(new REPS());
-    throw invalid_argument("unknown path-set generator: " + name);
-}
-
-map<SDpair, vector<Path>> build_main_style_path_set(
+map<SDpair, vector<Path>> build_shared_paths(
     const Graph& graph,
-    const vector<SDpair>& requests,
-    const string& method_name) {
-    // Match main.cpp: generate paths on a resource-expanded copy, deduplicate
-    // them, then explicitly include every available two-hop alternative.
+    const vector<SDpair>& requests) {
+    // Mirror main.cpp: resource-expanded shortest paths plus all explicit
+    // two-hop alternatives. Every algorithm receives this same path set.
     Graph path_graph = graph;
     path_graph.increase_resources(10);
-    unique_ptr<PathMethod> method = make_path_method(method_name);
-    method->build_paths(path_graph, requests);
+    Greedy method;
+    method.build_paths(path_graph, requests);
 
     map<SDpair, set<Path>> unique_paths;
-    for(const auto& entry : method->get_paths()) {
+    for(const auto& entry : method.get_paths()) {
         for(const Path& path : entry.second) {
             unique_paths[entry.first].insert(path);
         }
     }
     for(const SDpair& request : requests) {
-        const int source = request.first;
-        const int destination = request.second;
-        for(int intermediate : graph.adj_list[source]) {
-            if(graph.adj_set[intermediate].count(destination)) {
+        for(int intermediate : graph.adj_list[request.first]) {
+            if(graph.adj_set[intermediate].count(request.second)) {
                 unique_paths[request].insert(
-                    {source, intermediate, destination});
+                    {request.first, intermediate, request.second});
             }
         }
     }
 
     map<SDpair, vector<Path>> paths;
     for(const SDpair& request : requests) {
-        const set<Path>& request_paths = unique_paths[request];
-        paths[request] = vector<Path>(
-            request_paths.begin(), request_paths.end());
+        const set<Path>& candidates = unique_paths[request];
+        if(candidates.empty()) {
+            throw runtime_error(
+                "no candidate path for " + to_string(request.first) +
+                "->" + to_string(request.second));
+        }
+        paths[request] = vector<Path>(candidates.begin(), candidates.end());
     }
     return paths;
 }
 
-Comparison compare_trial(const TrialSpec& spec,
-                         const string& input_directory) {
+AlgorithmResult run_named_algorithm(
+    const string& display_name,
+    unique_ptr<AlgorithmBase> algorithm) {
+    AlgorithmResult result = run_algorithm(std::move(algorithm));
+    result.name = display_name;
+    return result;
+}
+
+vector<string> algorithm_names() {
+    vector<string> names = {
+        "UB", "WPFA-noPurify", "WPFA", "FNPR", "FLTO",
+    };
+    if(EFiRAP::gurobi_available()) {
+        names.push_back("EFiRAP");
+        names.push_back("EFiRAP-long");
+    }
+    return names;
+}
+
+vector<AlgorithmResult> run_main_algorithms(
+    const Graph& graph,
+    const vector<SDpair>& requests,
+    const map<SDpair, vector<Path>>& paths) {
+    vector<AlgorithmResult> results;
+    results.push_back(run_named_algorithm(
+        "UB", unique_ptr<AlgorithmBase>(
+            new WernerAlgo3(graph, requests, paths))));
+    results.push_back(run_named_algorithm(
+        "WPFA-noPurify", unique_ptr<AlgorithmBase>(
+            new WernerAlgo(graph, requests, paths))));
+    {
+        unique_ptr<WernerAlgo2> algorithm(new WernerAlgo2(
+            graph, requests, paths,
+            MAIN_STYLE_EPSILON, MAIN_STYLE_WPFA_BUCKET_EPS));
+        algorithm->set_detailed_logging(false);
+        results.push_back(run_named_algorithm(
+            "WPFA", std::move(algorithm)));
+    }
+    results.push_back(run_named_algorithm(
+        "FNPR", unique_ptr<AlgorithmBase>(
+            new MyAlgo1(graph, requests, paths))));
+    results.push_back(run_named_algorithm(
+        "FLTO", unique_ptr<AlgorithmBase>(
+            new MyAlgo3(graph, requests, paths))));
+
+    if(EFiRAP::gurobi_available()) {
+        results.push_back(run_named_algorithm(
+            "EFiRAP", unique_ptr<AlgorithmBase>(
+                new EFiRAP(graph, requests, paths))));
+        results.push_back(run_named_algorithm(
+            "EFiRAP-long", unique_ptr<AlgorithmBase>(
+                new EFiRAP_longtime(graph, requests, paths))));
+    }
+    return results;
+}
+
+TrialResult run_trial(const TrialSpec& spec,
+                      const string& input_directory,
+                      bool run_exact_reference) {
     const string graph_path =
         input_directory + "/main_smallscale_" + spec.name + ".input";
     write_trial_graph(graph_path, spec);
     Graph graph = load_trial_graph(graph_path, spec);
-    const map<SDpair, vector<Path>> paths = build_main_style_path_set(
-        graph, spec.requests, spec.path_set);
 
-    Comparison result;
+    TrialResult result;
     result.spec = spec;
-    result.paths = paths;
-    for(const SDpair& request : spec.requests) {
-        const int count = (int)paths.at(request).size();
-        result.candidate_path_count += count;
-        if(count > 0) ++result.requests_with_paths;
-    }
-    const auto exact_start = chrono::steady_clock::now();
-    result.optimum = solve_exact(graph, spec.requests, paths);
-    const auto exact_finish = chrono::steady_clock::now();
-    result.exact_runtime_ms = chrono::duration<double, milli>(
-        exact_finish - exact_start).count();
-    result.wpfa = run_wpfa(graph, spec.requests, paths);
+    result.paths = build_shared_paths(graph, spec.requests);
 
-    if(result.wpfa.objective > result.optimum.objective + 1e-8) {
-        throw runtime_error(
-            "WPFA exceeds exhaustive OPT in " + spec.name +
-            "; the two model definitions are inconsistent");
+    if(run_exact_reference) {
+        const auto start = chrono::steady_clock::now();
+        result.optimum = solve_exact(graph, spec.requests, result.paths);
+        const auto finish = chrono::steady_clock::now();
+        result.exact_runtime_ms = chrono::duration<double, milli>(
+            finish - start).count();
+        result.has_exact = true;
     }
-    if(result.optimum.objective > OBJECTIVE_TOLERANCE) {
-        result.gap_pct = max(
-            0.0, 100.0 *
-            (result.optimum.objective - result.wpfa.objective) /
-            result.optimum.objective);
-    }
-    result.optimum_purified_requests =
-        count_purified(result.optimum.selected);
-    result.wpfa_purified_requests = count_purified(result.wpfa.selected);
-    return result;
-}
 
-TrialSpec canonical_trial() {
-    // Keep the already-audited R1.3 instance exactly reproducible.  Lengths
-    // below are derived from its three stored fidelity ratios using Sec. III-A.
-    return {
-        "reviewer_line4", "canonical", "", 6,
-        {4, 4, 4, 4},
-        {length_from_fidelity_ratio(0.92),
-         length_from_fidelity_ratio(0.84),
-         length_from_fidelity_ratio(0.94)},
-        0.80, {}
-    };
-}
-
-TrialSpec apply_path_set(const TrialSpec& physical,
-                         const PathSetSpec& path_set,
-                         bool keep_canonical_name = false) {
-    TrialSpec result = physical;
-    result.path_set = path_set.name;
-    result.requests = reviewer_requests();
-    if(!keep_canonical_name) {
-        result.name += "_" + path_set.name;
+    result.algorithms = run_main_algorithms(
+        graph, spec.requests, result.paths);
+    if(result.has_exact) {
+        for(const AlgorithmResult& algorithm : result.algorithms) {
+            // UB is a relaxed upper bound, not a feasible schedule.
+            if(algorithm.name == "UB") continue;
+            if(algorithm.objective > result.optimum.objective + 1e-8) {
+                throw runtime_error(
+                    algorithm.name + " exceeds exhaustive OPT in " +
+                    spec.name);
+            }
+        }
     }
     return result;
-}
-
-vector<TrialSpec> random_trials(int count, uint32_t seed) {
-    mt19937 generator(seed);
-    // These ranges stay around the nontrivial reviewer instance.  Capacity 3
-    // and very long links make R2 structurally infeasible in five slots and
-    // primarily test admission at a degenerate boundary, not (W,P) quality.
-    uniform_real_distribution<double> length_distribution(6.0, 18.0);
-    uniform_real_distribution<double> threshold_distribution(0.80, 0.84);
-    uniform_int_distribution<int> capacity_distribution(4, 5);
-    uniform_int_distribution<int> horizon_distribution(5, 6);
-
-    vector<TrialSpec> trials;
-    trials.reserve(count);
-    for(int index = 0; index < count; ++index) {
-        TrialSpec trial;
-        ostringstream name;
-        name << "random_" << setw(3) << setfill('0') << index + 1;
-        trial.name = name.str();
-        trial.kind = "random";
-        trial.path_set = "";
-        trial.time_limit = horizon_distribution(generator);
-        for(int node = 0; node < 4; ++node) {
-            trial.capacities.push_back(capacity_distribution(generator));
-        }
-        for(int link = 0; link < 3; ++link) {
-            trial.lengths_km.push_back(length_distribution(generator));
-        }
-        trial.fidelity_threshold = threshold_distribution(generator);
-        trial.requests.clear();
-        trials.push_back(std::move(trial));
-    }
-    return trials;
 }
 
 void write_results_header(ofstream& output) {
     output
-        << "instance,kind,path_set,request_pairs,seed,nodes,edges,requests,time_limit,"
-        << "capacities_v1_v4,lengths_km_l12_l23_l34,fidelity_threshold,"
-        << "epsilon,bucket_eps,max_purification_rounds,algorithm,"
-        << "proven_optimal,objective,optimality_gap_pct,accepted_requests,"
-        << "expected_requests,purified_requests,runtime_ms,"
-        << "enumerated_schedules,feasible_schedules,"
+        << "instance,sweep,parameter_value,topology,nodes,edges,requests,"
+        << "time_limit,memory_per_node,min_link_fidelity,max_link_fidelity,"
+        << "fidelity_threshold,tao,swap_probability,epsilon,"
+        << "graph_bucket_eps,wpfa_bucket_eps,"
+        << "algorithm,display_order,proven_optimal,fidelity_gain,"
+        << "optimality_gap_pct,actual_requests,expected_requests,runtime_ms,"
+        << "candidate_paths,enumerated_schedules,feasible_schedules,"
         << "nondominated_candidates,search_states\n";
 }
 
-void write_result_row(ofstream& output,
-                      const Comparison& result,
-                      uint32_t seed,
-                      bool exact) {
+int candidate_path_count(const TrialResult& result) {
+    int count = 0;
+    for(const auto& entry : result.paths) count += entry.second.size();
+    return count;
+}
+
+void write_trial_rows(ofstream& output, const TrialResult& result) {
     const TrialSpec& spec = result.spec;
-    output << spec.name << ',' << spec.kind << ',' << spec.path_set << ','
-           << request_pairs_string(spec.requests) << ',' << seed
-           << ",4,3," << spec.requests.size() << ',' << spec.time_limit << ','
-           << join_ints(spec.capacities) << ','
-           << join_doubles(spec.lengths_km) << ','
-           << spec.fidelity_threshold << ','
-           << SMALL_SCALE_EPSILON << ',' << SMALL_SCALE_BUCKET_EPS << ','
-           << SMALL_SCALE_MAX_PURIFICATION_ROUNDS << ',';
-    if(exact) {
-        output << "OPT,1," << result.optimum.objective << ",0,"
+    auto write_prefix = [&]() {
+        output << spec.name << ',' << spec.sweep << ','
+               << spec.parameter_value << ',' << spec.topology << ','
+               << spec.node_count << ',' << spec.edges.size() << ','
+               << spec.requests.size() << ',' << spec.time_limit << ','
+               << spec.memory_per_node << ',' << MIN_LINK_FIDELITY << ','
+               << MAX_LINK_FIDELITY << ',' << spec.fidelity_threshold << ','
+               << spec.slot_duration << ',' << spec.swap_probability << ','
+               << MAIN_STYLE_EPSILON << ',' << MAIN_STYLE_GRAPH_BUCKET_EPS
+               << ','
+               << MAIN_STYLE_WPFA_BUCKET_EPS << ',';
+    };
+
+    if(result.has_exact) {
+        write_prefix();
+        output << "OPT,-1,1," << result.optimum.objective << ",0,"
                << result.optimum.accepted_requests << ','
                << result.optimum.expected_requests << ','
-               << result.optimum_purified_requests << ','
                << result.exact_runtime_ms << ','
+               << candidate_path_count(result) << ','
                << result.optimum.enumerated_schedules << ','
                << result.optimum.feasible_schedules << ','
                << result.optimum.nondominated_candidates << ','
                << result.optimum.search_states << '\n';
-    } else {
-        output << "WPFA,0," << result.wpfa.objective << ','
-               << result.gap_pct << ','
-               << result.wpfa.accepted_requests << ','
-               << result.wpfa.expected_requests << ','
-               << result.wpfa_purified_requests << ','
-               << result.wpfa.runtime_ms << ",,,,\n";
+    }
+
+    for(size_t index = 0; index < result.algorithms.size(); ++index) {
+        const AlgorithmResult& algorithm = result.algorithms[index];
+        write_prefix();
+        output << algorithm.name << ',' << index << ",0,"
+               << algorithm.objective << ',';
+        if(result.has_exact && algorithm.name != "UB" &&
+           result.optimum.objective > OBJECTIVE_TOLERANCE) {
+            output << max(
+                0.0,
+                100.0 * (result.optimum.objective - algorithm.objective) /
+                    result.optimum.objective);
+        }
+        output << ',' << algorithm.accepted_requests << ','
+               << algorithm.expected_requests << ',' << algorithm.runtime_ms
+               << ',' << candidate_path_count(result) << ",,,,\n";
     }
 }
 
-bool is_exact_match(const Comparison& result) {
-    const double scale = max(1.0, fabs(result.optimum.objective));
-    return fabs(result.optimum.objective - result.wpfa.objective) <=
-           MATCH_TOLERANCE * scale;
-}
+using AggregateTable =
+    map<string, map<double, map<string, Aggregate>>>;
 
-double quantile(vector<double> values, double probability) {
-    if(values.empty()) return numeric_limits<double>::quiet_NaN();
-    sort(values.begin(), values.end());
-    const double position = probability * (values.size() - 1);
-    const size_t lower = (size_t)floor(position);
-    const size_t upper = (size_t)ceil(position);
-    const double fraction = position - lower;
-    return values[lower] * (1.0 - fraction) + values[upper] * fraction;
-}
-
-void write_summary_row(ofstream& output,
-                       const string& path_set,
-                       const vector<Comparison>& results,
-                       uint32_t seed) {
-    if(results.empty()) {
-        output << path_set << ",0," << seed
-               << ",6,18,0.80,0.84,4,5,5,6,"
-               << "nan,nan,nan,nan,none,0,0,0,nan,nan\n";
-        return;
+AggregateTable aggregate_results(const vector<TrialResult>& results) {
+    AggregateTable table;
+    for(const TrialResult& trial : results) {
+        for(const AlgorithmResult& algorithm : trial.algorithms) {
+            Aggregate& aggregate = table[trial.spec.sweep]
+                                        [trial.spec.parameter_value]
+                                        [algorithm.name];
+            ++aggregate.samples;
+            aggregate.fidelity_gain += algorithm.objective;
+            aggregate.expected_requests += algorithm.expected_requests;
+            aggregate.accepted_requests += algorithm.accepted_requests;
+            aggregate.runtime_seconds += algorithm.runtime_ms / 1000.0;
+        }
     }
-
-    vector<double> gaps;
-    gaps.reserve(results.size());
-    double gap_sum = 0.0;
-    double exact_runtime_sum = 0.0;
-    double wpfa_runtime_sum = 0.0;
-    int exact_matches = 0;
-    int positive_optimum = 0;
-    int purification_instances = 0;
-    size_t worst = 0;
-    for(size_t index = 0; index < results.size(); ++index) {
-        const Comparison& result = results[index];
-        gaps.push_back(result.gap_pct);
-        gap_sum += result.gap_pct;
-        exact_runtime_sum += result.exact_runtime_ms;
-        wpfa_runtime_sum += result.wpfa.runtime_ms;
-        if(is_exact_match(result)) ++exact_matches;
-        if(result.optimum.objective > OBJECTIVE_TOLERANCE) ++positive_optimum;
-        if(result.optimum_purified_requests > 0) ++purification_instances;
-        if(result.gap_pct > results[worst].gap_pct) worst = index;
-    }
-
-    output << path_set << ',' << results.size() << ',' << seed
-           << ",6,18,0.80,0.84,4,5,5,6,"
-           << gap_sum / results.size() << ','
-           << quantile(gaps, 0.50) << ',' << quantile(gaps, 0.95) << ','
-           << results[worst].gap_pct << ',' << results[worst].spec.name << ','
-           << exact_matches << ',' << positive_optimum << ','
-           << purification_instances << ','
-           << exact_runtime_sum / results.size() << ','
-           << wpfa_runtime_sum / results.size() << '\n';
+    return table;
 }
 
-void write_batch_summary(const string& filename,
-                         const vector<Comparison>& results,
-                         uint32_t seed) {
+double aggregate_metric(const Aggregate& aggregate, const string& metric) {
+    if(aggregate.samples == 0) {
+        return numeric_limits<double>::quiet_NaN();
+    }
+    if(metric == "fidelity_gain") {
+        return aggregate.fidelity_gain / aggregate.samples;
+    }
+    if(metric == "succ_request_cnt") {
+        return aggregate.expected_requests / aggregate.samples;
+    }
+    if(metric == "actual_req_cnt") {
+        return aggregate.accepted_requests / aggregate.samples;
+    }
+    if(metric == "runtime") {
+        return aggregate.runtime_seconds / aggregate.samples;
+    }
+    throw invalid_argument("unknown metric: " + metric);
+}
+
+void write_summary(const string& filename,
+                   const AggregateTable& table,
+                   const vector<string>& names) {
     ofstream output(filename);
-    if(!output) throw runtime_error("cannot create summary: " + filename);
-    output << setprecision(17);
-    output
-        << "path_set,random_instances,seed,length_min_km,length_max_km,"
-        << "threshold_min,threshold_max,capacity_min,capacity_max,"
-        << "horizon_min,horizon_max,average_gap_pct,median_gap_pct,"
-        << "p95_gap_pct,maximum_gap_pct,worst_instance,exact_matches,"
-        << "positive_opt_instances,opt_instances_using_purification,"
-        << "mean_exact_runtime_ms,mean_wpfa_runtime_ms\n";
-
-    write_summary_row(output, "ALL", results, seed);
-    for(const PathSetSpec& path_set : path_sets()) {
-        vector<Comparison> selected;
-        for(const Comparison& result : results) {
-            if(result.spec.path_set == path_set.name) {
-                selected.push_back(result);
+    if(!output) throw runtime_error("cannot write summary: " + filename);
+    output << setprecision(17)
+           << "sweep,parameter_value,algorithm,display_order,samples,"
+           << "mean_fidelity_gain,mean_expected_requests,"
+           << "mean_actual_requests,mean_runtime_seconds\n";
+    for(const string& sweep : SWEEP_NAMES) {
+        const auto sweep_it = table.find(sweep);
+        if(sweep_it == table.end()) continue;
+        for(double value : sweep_values(sweep)) {
+            for(size_t index = 0; index < names.size(); ++index) {
+                const Aggregate& aggregate =
+                    sweep_it->second.at(value).at(names[index]);
+                output << sweep << ',' << value << ',' << names[index]
+                       << ',' << index << ',' << aggregate.samples << ','
+                       << aggregate_metric(aggregate, "fidelity_gain") << ','
+                       << aggregate_metric(aggregate, "succ_request_cnt")
+                       << ','
+                       << aggregate_metric(aggregate, "actual_req_cnt") << ','
+                       << aggregate_metric(aggregate, "runtime") << '\n';
             }
         }
-        write_summary_row(output, path_set.name, selected, seed);
     }
 }
 
-CaseSpec canonical_case_spec(const TrialSpec& trial) {
-    return {
-        trial.name, 4, trial.time_limit, 4,
-        {{0, 1, fidelity_ratio_from_length(trial.lengths_km[0])},
-         {1, 2, fidelity_ratio_from_length(trial.lengths_km[1])},
-         {2, 3, fidelity_ratio_from_length(trial.lengths_km[2])}},
-        trial.requests
-    };
-}
-
-string line_path_string(const SDpair& request) {
-    ostringstream output;
-    const int step = request.first <= request.second ? 1 : -1;
-    for(int node = request.first;; node += step) {
-        if(node != request.first) output << '-';
-        output << node + 1;
-        if(node == request.second) break;
-    }
-    return output.str();
-}
-
-void write_path_set_manifest(const string& filename) {
-    ofstream output(filename);
-    if(!output) throw runtime_error("cannot create path-set manifest: " + filename);
-    output << "path_set,request_index,request,unique_line_path\n";
-    for(const PathSetSpec& path_set : path_sets()) {
-        for(size_t index = 0; index < path_set.requests.size(); ++index) {
-            const SDpair request = path_set.requests[index];
-            output << path_set.name << ',' << index + 1 << ','
-                   << request.first + 1 << '-' << request.second + 1 << ','
-                   << line_path_string(request) << '\n';
+void write_ans_files(const string& answer_directory,
+                     const AggregateTable& table,
+                     const vector<string>& names) {
+    for(const string& sweep : SWEEP_NAMES) {
+        const auto sweep_it = table.find(sweep);
+        if(sweep_it == table.end()) continue;
+        for(const string& metric : METRIC_NAMES) {
+            const string filename = answer_directory + "/SmallScale_" +
+                                    sweep + "_" + metric + ".ans";
+            ofstream output(filename);
+            if(!output) throw runtime_error("cannot write ANS: " + filename);
+            output << setprecision(17);
+            for(double value : sweep_values(sweep)) {
+                output << value;
+                for(const string& name : names) {
+                    const Aggregate& aggregate =
+                        sweep_it->second.at(value).at(name);
+                    output << ' ' << aggregate_metric(aggregate, metric);
+                }
+                output << '\n';
+            }
         }
     }
 }
 
-void write_detailed_artifacts(const string& answer_directory,
-                              const Comparison& result) {
-    const CaseSpec spec = canonical_case_spec(result.spec);
-    vector<SelectionEntry> opt_entries = exact_entries(result.optimum);
-    vector<SelectionEntry> wpfa_entries = algorithm_entries(result.wpfa);
-    for(SelectionEntry& entry : wpfa_entries) entry.algorithm = "WPFA";
-
-    const string selection_path =
-        answer_directory + "/main_smallscale_selection.csv";
-    const string numerology_path =
-        answer_directory + "/main_smallscale_numerology.csv";
-    const string schedule_path =
-        answer_directory + "/main_smallscale_schedules.txt";
-    const string certificate_path =
-        answer_directory + "/main_smallscale_opt_certificate.txt";
-
-    ofstream selection(selection_path);
-    ofstream numerology(numerology_path);
-    ofstream schedule(schedule_path);
-    ofstream certificate(certificate_path);
-    if(!selection || !numerology || !schedule || !certificate) {
-        throw runtime_error("cannot create detailed small-scale artifacts");
+void print_trial(const TrialResult& result) {
+    cout << '[' << result.spec.sweep << '=' << result.spec.parameter_value
+         << ", " << result.spec.topology << ']';
+    if(result.has_exact) cout << " OPT=" << result.optimum.objective;
+    for(const AlgorithmResult& algorithm : result.algorithms) {
+        cout << ' ' << algorithm.name << '=' << algorithm.objective;
     }
-    selection << setprecision(17);
-    certificate << setprecision(17);
-    write_selection_header(selection);
-    write_selection_rows(selection, spec, opt_entries);
-    write_selection_rows(selection, spec, wpfa_entries);
-    write_numerology_header(numerology);
-    write_numerology_rows(numerology, spec, "OPT", opt_entries);
-    write_numerology_rows(numerology, spec, "WPFA", wpfa_entries);
-    write_schedule_report(schedule, spec, "OPT", result.optimum.objective,
-                          result.optimum.objective, opt_entries);
-    write_schedule_report(schedule, spec, "WPFA", result.wpfa.objective,
-                          result.optimum.objective, wpfa_entries);
-    write_certificate(certificate, spec, result.optimum);
-}
-
-int total_memory_units(const vector<SelectionEntry>& entries,
-                       int time_limit) {
-    int total = 0;
-    for(const SelectionEntry& entry : entries) {
-        total += make_numerology(
-            4, time_limit, entry.shape_vector, entry.purify_rounds).total_units;
-    }
-    return total;
-}
-
-void print_comparison(const Comparison& result) {
-    cout << '[' << result.spec.name << "] OPT=" << result.optimum.objective
-         << " WPFA=" << result.wpfa.objective
-         << " gap=" << result.gap_pct << "%"
-         << " accepted=" << result.optimum.accepted_requests << '/'
-         << result.wpfa.accepted_requests
-         << " purified=" << result.optimum_purified_requests << '/'
-         << result.wpfa_purified_requests << '\n';
-}
-
-void print_summary_line(const string& label,
-                        const vector<Comparison>& results) {
-    if(results.empty()) return;
-    double gap_sum = 0.0;
-    int matches = 0;
-    size_t worst = 0;
-    for(size_t index = 0; index < results.size(); ++index) {
-        gap_sum += results[index].gap_pct;
-        if(is_exact_match(results[index])) ++matches;
-        if(results[index].gap_pct > results[worst].gap_pct) worst = index;
-    }
-    cout << "  " << label << ": average gap="
-         << gap_sum / results.size()
-         << "%, maximum gap=" << results[worst].gap_pct
-         << "% (" << results[worst].spec.name << ')'
-         << ", exact matches=" << matches << '/' << results.size() << '\n';
+    cout << '\n';
 }
 
 } // namespace
@@ -644,77 +549,61 @@ int main(int argc, char** argv) {
             answer_directory + "/main_smallscale_results.csv";
         const string summary_path =
             answer_directory + "/main_smallscale_summary.csv";
-        const string path_set_path =
-            answer_directory + "/main_smallscale_path_sets.csv";
 
-        ofstream results_csv(results_path);
-        if(!results_csv) {
-            throw runtime_error("cannot create results: " + results_path);
+        ofstream results_output(results_path);
+        if(!results_output) {
+            throw runtime_error("cannot write results: " + results_path);
         }
-        results_csv << setprecision(17);
-        write_results_header(results_csv);
-        write_path_set_manifest(path_set_path);
+        results_output << setprecision(17);
+        write_results_header(results_output);
+
+        vector<string> selected_sweeps = SWEEP_NAMES;
+        if(!options.selected_sweep.empty()) {
+            selected_sweeps = {options.selected_sweep};
+        }
+        const vector<string> names = algorithm_names();
 
         cout << fixed << setprecision(6)
-             << "Four-node line: exact OPT versus WPFA\n"
-             << "path_sets=" << path_sets().size()
-             << ", epsilon=" << SMALL_SCALE_EPSILON
-             << ", bucket_eps=" << SMALL_SCALE_BUCKET_EPS << '\n';
-
-        Comparison detailed;
-        for(size_t index = 0; index < path_sets().size(); ++index) {
-            const TrialSpec trial = apply_path_set(
-                canonical_trial(), path_sets()[index], index == 0);
-            Comparison result = compare_trial(trial, input_directory);
-            write_result_row(results_csv, result, options.seed, true);
-            write_result_row(results_csv, result, options.seed, false);
-            print_comparison(result);
-            if(index == 0) detailed = std::move(result);
+             << "Small-scale 3/4-node parameter sweeps\n"
+             << "minimum link fidelity=" << MIN_LINK_FIDELITY
+             << ", default fidelity threshold="
+             << DEFAULT_FIDELITY_THRESHOLD
+             << ", exact reference="
+             << (options.run_exact ? "enabled" : "disabled") << '\n'
+             << "algorithm order=";
+        for(size_t index = 0; index < names.size(); ++index) {
+            if(index) cout << ',';
+            cout << names[index];
         }
-        write_detailed_artifacts(answer_directory, detailed);
-
-        vector<SelectionEntry> detailed_opt = exact_entries(detailed.optimum);
-        vector<SelectionEntry> detailed_wpfa =
-            algorithm_entries(detailed.wpfa);
-        cout << "  detailed memory-slot units: OPT="
-             << total_memory_units(detailed_opt, detailed.spec.time_limit)
-             << " WPFA="
-             << total_memory_units(detailed_wpfa, detailed.spec.time_limit)
-             << '\n';
-
-        vector<Comparison> random_results;
-        for(const TrialSpec& physical : random_trials(
-                options.random_instances, options.seed)) {
-            for(const PathSetSpec& path_set : path_sets()) {
-                const TrialSpec trial = apply_path_set(physical, path_set);
-                Comparison result = compare_trial(trial, input_directory);
-                write_result_row(results_csv, result, options.seed, true);
-                write_result_row(results_csv, result, options.seed, false);
-                print_comparison(result);
-                random_results.push_back(std::move(result));
-            }
+        cout << '\n';
+        if(!EFiRAP::gurobi_available()) {
+            cout << "[INFO] Gurobi support is disabled; EFiRAP variants are "
+                    "omitted.\n";
         }
-        results_csv.close();
 
-        write_batch_summary(summary_path, random_results, options.seed);
-        if(!random_results.empty()) {
-            cout << "Random-batch summaries (paired physical instances):\n";
-            print_summary_line("ALL", random_results);
-            for(const PathSetSpec& path_set : path_sets()) {
-                vector<Comparison> selected;
-                for(const Comparison& result : random_results) {
-                    if(result.spec.path_set == path_set.name) {
-                        selected.push_back(result);
-                    }
+        vector<TrialResult> results;
+        for(const string& sweep : selected_sweeps) {
+            for(double value : sweep_values(sweep)) {
+                for(const TopologySpec& topology : topologies()) {
+                    TrialResult result = run_trial(
+                        make_trial(topology, sweep, value),
+                        input_directory, options.run_exact);
+                    write_trial_rows(results_output, result);
+                    print_trial(result);
+                    results.push_back(std::move(result));
                 }
-                print_summary_line(path_set.name, selected);
             }
         }
+        results_output.close();
+
+        const AggregateTable aggregates = aggregate_results(results);
+        write_summary(summary_path, aggregates, names);
+        write_ans_files(answer_directory, aggregates, names);
+
         cout << "Results: " << results_path << '\n'
              << "Summary: " << summary_path << '\n'
-             << "Path sets: " << path_set_path << '\n'
-             << "Detailed schedules and numerology: "
-             << answer_directory << "/main_smallscale_*\n";
+             << "Chart data: " << answer_directory
+             << "/SmallScale_<sweep>_<metric>.ans\n";
         return 0;
     } catch(const exception& error) {
         cerr << "main_smallscale: " << error.what() << '\n';
