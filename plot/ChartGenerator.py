@@ -225,6 +225,43 @@ class ChartGenerator:
         },
     }
 
+    # Manual Y-axis controls used only by SmallScale_*.ans figures.
+    #
+    # Tuple format:
+    #   (minimum, maximum, minor_tick_interval, major_label_every_n_ticks)
+    # Use "auto" for any individual figure to restore automatic scaling.
+    # Runtime values below are in seconds even when the axis displays x10^-3.
+    _SMALL_SCALE_Y_INTERVALS = {
+        'fidelity_gain': {
+            'request_cnt': (1, 5, 0.5, 2),
+            'fidelity_threshold': (1.5, 4.0, 0.25, 2),
+            'tao': (3, 3.5, 0.25, 1),
+            'swap_prob': (2.75, 3.5, 0.25, 1),
+            'avg_memory': (1.5, 4.0, 0.25, 2),
+        },
+        'succ_request_cnt': {
+            'request_cnt': (0, 6, 0.5, 2),
+            'fidelity_threshold': (1.5, 4.5, 0.25, 2),
+            'tao': (1.5, 4.5, 0.25, 2),
+            'swap_prob': (1.5, 4.5, 0.25, 2),
+            'avg_memory': (1.5, 4.5, 0.25, 2),
+        },
+        'actual_req_cnt': {
+            'request_cnt': (0, 6, 0.5, 2),
+            'fidelity_threshold': (0, 5, 0.5, 2),
+            'tao': (0, 5, 0.5, 2),
+            'swap_prob': (0, 5, 0.5, 2),
+            'avg_memory': (0, 5, 0.5, 2),
+        },
+        'runtime': {
+            'request_cnt': (0, 0.010, 0.001, 2),
+            'fidelity_threshold': (0, 0.010, 0.001, 2),
+            'tao': (0, 0.010, 0.001, 2),
+            'swap_prob': (0, 0.010, 0.001, 2),
+            'avg_memory': (0, 0.010, 0.001, 2),
+        },
+    }
+
     _AXIS_NAME = {
         "request_cnt": r"$\#$Requests", "time_limit": "$| T |$",
         "avg_memory": "Average Memory Limit", "mem_vary": "Memory Variation",
@@ -269,11 +306,12 @@ class ChartGenerator:
 
     def __init__(self, dataName: str, x_key: str, y_key: str, label_every: int|None = None):
         path = os.path.join('..', 'data', 'ans', dataName)
+        is_small_scale = os.path.basename(dataName).startswith("SmallScale_")
         if not os.path.exists(path):
             print(f"[WARN] file doesn't exist: {os.path.abspath(path)}")
             return
 
-        if os.path.basename(dataName).startswith("SmallScale_"):
+        if is_small_scale:
             # main_smallscale writes exactly two columns in this order.
             self._ALGO_NAMES = ["OPT", "WPFA"]
             self._DRAW_ORDER = [0, 1]
@@ -372,6 +410,21 @@ class ChartGenerator:
             x_labels = [f"{v:g}" if isinstance(v, float) else str(v) for v in tmp]
         else:
             x_labels = [str(v) for v in x_vals]
+
+        if is_small_scale:
+            # Keep the compact few-point SmallScale axes readable.  The ANS
+            # files use full double precision, which is useful for replay but
+            # far too verbose for tick labels.
+            if x_key in ("request_cnt", "avg_memory"):
+                x_labels = [
+                    f"{int(round(float(value)))}" for value in x_vals
+                ]
+            elif x_key in ("fidelity_threshold", "swap_prob"):
+                x_labels = [f"{float(value):.2f}" for value in x_vals]
+            elif x_key == "tao":
+                x_labels = [
+                    f"{float(value) * 1000.0:.1f}" for value in x_vals
+                ]
 
         if x_key == "mem_vary":
             varied_labels = []
@@ -512,15 +565,22 @@ class ChartGenerator:
         )
 
         # 自動 Y 軸刻度
-        is_small_scale = os.path.basename(dataName).startswith("SmallScale_")
-        cfg = (
-            "auto"
-            if is_small_scale
-            else self._Y_INTERVALS[y_key].get(x_key, "auto")
-        )
+        if is_small_scale:
+            cfg = self._SMALL_SCALE_Y_INTERVALS.get(y_key, {}).get(x_key, "auto")
+        else:
+            cfg = self._Y_INTERVALS[y_key].get(x_key, "auto")
         manual_y_range = cfg != "auto"
         if cfg == "auto":
-            Ystart, Yend, Yinterval = self._auto_y_range(min_data, max_data, target_ticks=7, padding=0.05)
+            range_min, range_max = min_data, max_data
+            if is_small_scale and min_data >= 0 and max_data > 0:
+                # A five-percent data-span pad makes almost-equal OPT/WPFA
+                # values look misleadingly far apart.  Match the visual
+                # breathing room of the original Greedy figures instead.
+                range_min = 0.0 if y_key == "runtime" else 0.60 * min_data
+                range_max = 1.20 * max_data
+            Ystart, Yend, Yinterval = self._auto_y_range(
+                range_min, range_max, target_ticks=7, padding=0.05,
+            )
             span = max(1e-12, Yend - Ystart)
             rough_labels = span / max(1e-12, Yinterval)
             label_step_factor = max(1, int(math.ceil(rough_labels / 7)))
@@ -551,8 +611,13 @@ class ChartGenerator:
             if top_needed > Yend:
                 Yend = top_needed
 
-        Xpow_disp_unit = " s" if x_key in ("tao", "entangle_time") else ""
-        Xlabel_text = self._AXIS_NAME.get(x_key, x_key) + self._gen_power_suffix(Xpow, Xpow_disp_unit)
+        if is_small_scale and x_key == "tao":
+            Xlabel_text = "Slot Duration (ms)"
+        elif is_small_scale and x_key == "avg_memory":
+            Xlabel_text = "Memory per Node"
+        else:
+            Xpow_disp_unit = " s" if x_key in ("tao", "entangle_time") else ""
+            Xlabel_text = self._AXIS_NAME.get(x_key, x_key) + self._gen_power_suffix(Xpow, Xpow_disp_unit)
         Ylabel_text = self._AXIS_NAME.get(y_key, y_key) + self._gen_power_suffix(Ypow, "")
 
         major_step = Yinterval * label_step_factor
@@ -579,10 +644,20 @@ class ChartGenerator:
             x_tick_fontsize = self._FONT_SIZE_BASE - 10
         elif x_key == "path_set":
             x_tick_fontsize = self._FONT_SIZE_BASE - 4
+        elif is_small_scale:
+            x_tick_fontsize = self._FONT_SIZE_BASE
         else:
             x_tick_fontsize = self._FONT_SIZE_BASE + 4
+
+        tick_indices = list(range(len(x_labels)))
+        if is_small_scale and len(tick_indices) > 5:
+            tick_step = int(math.ceil(len(tick_indices) / 5.0))
+            tick_indices = tick_indices[::tick_step]
+            if tick_indices[-1] != len(x_labels) - 1:
+                tick_indices.append(len(x_labels) - 1)
         plt.xticks(
-            ticks=range(len(x_labels)), labels=x_labels,
+            ticks=tick_indices,
+            labels=[x_labels[index] for index in tick_indices],
             fontsize=x_tick_fontsize
         )
         if is_categorical_bar:
@@ -674,9 +749,21 @@ if __name__ == "__main__":
         ),
     }
 
+    # Optional dataset selector, e.g.:
+    #   python ChartGenerator.py SmallScale
+    requested_datasets = {arg.lower() for arg in sys.argv[1:]}
+    valid_datasets = {name.lower() for name in datasets}
+    unknown_datasets = requested_datasets - valid_datasets
+    if unknown_datasets:
+        choices = ", ".join(datasets)
+        unknown = ", ".join(sorted(unknown_datasets))
+        raise SystemExit(f"Unknown dataset: {unknown}. Choose from: {choices}")
+
     OVERRIDE_LABEL_EVERY = None
 
     for Path, (dataset_xlabels, dataset_ylabels) in datasets.items():
+        if requested_datasets and Path.lower() not in requested_datasets:
+            continue
         for X in dataset_xlabels:
             for Y in dataset_ylabels:
                 fname = f"{Path}_{X}_{Y}.ans"
