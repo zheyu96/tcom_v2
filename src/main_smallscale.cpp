@@ -1,26 +1,14 @@
-// Small-scale parameter sweeps using the same algorithm order and metrics as
-// main.cpp. The exhaustive solver from main_small_scale.cpp is retained as an
-// independent reference, while every heuristic receives the same candidate
-// path set and deterministic three/four-node physical instances.
+// Small-scale parameter sweeps comparing the exhaustive OPT solver with WPFA.
+// Both methods receive the same candidate path set and deterministic
+// three/four-node physical instances.
 //
 // Build and run from src/:
 //   make main_smallscale
 //   ./main_smallscale
 //   ./main_smallscale --sweep request_cnt
-//   ./main_smallscale --no-exact
 
 #define SMALL_SCALE_EXPERIMENT_LIBRARY_ONLY
 #include "main_small_scale.cpp"
-
-#include "Algorithm/EFiRAP/EFiRAP.h"
-#include "Algorithm/EFiRAP_longtime/EFiRAP_longtime.h"
-#include "Algorithm/WernerAlgo3/WernerAlgo3.h"
-
-// WernerAlgo3.h leaks this legacy macro. Do not let it change the driver's
-// result and CSV types.
-#ifdef double
-#undef double
-#endif
 
 #include "Network/PathMethod/Greedy/Greedy.h"
 
@@ -57,7 +45,6 @@ const vector<string> METRIC_NAMES = {
 
 struct Options {
     string selected_sweep;
-    bool run_exact = true;
 };
 
 struct TopologySpec {
@@ -104,7 +91,6 @@ void print_help(const char* executable) {
     cout << "Usage: " << executable << " [options]\n"
          << "  --sweep NAME  run only request_cnt, fidelity_threshold, tao, "
             "swap_prob, or avg_memory\n"
-         << "  --no-exact    skip the exhaustive OPT reference\n"
          << "  --help        show this message\n";
 }
 
@@ -120,10 +106,6 @@ Options parse_options(int argc, char** argv) {
         if(option == "--help") {
             print_help(argv[0]);
             exit(0);
-        }
-        if(option == "--no-exact") {
-            options.run_exact = false;
-            continue;
         }
         if(option == "--sweep") {
             if(index + 1 >= argc) {
@@ -287,56 +269,24 @@ AlgorithmResult run_named_algorithm(
 }
 
 vector<string> algorithm_names() {
-    vector<string> names = {
-        "UB", "WPFA-noPurify", "WPFA", "FNPR", "FLTO",
-    };
-    if(EFiRAP::gurobi_available()) {
-        names.push_back("EFiRAP");
-        names.push_back("EFiRAP-long");
-    }
-    return names;
+    return {"OPT", "WPFA"};
 }
 
-vector<AlgorithmResult> run_main_algorithms(
+vector<AlgorithmResult> run_wpfa(
     const Graph& graph,
     const vector<SDpair>& requests,
     const map<SDpair, vector<Path>>& paths) {
     vector<AlgorithmResult> results;
-    results.push_back(run_named_algorithm(
-        "UB", unique_ptr<AlgorithmBase>(
-            new WernerAlgo3(graph, requests, paths))));
-    results.push_back(run_named_algorithm(
-        "WPFA-noPurify", unique_ptr<AlgorithmBase>(
-            new WernerAlgo(graph, requests, paths))));
-    {
-        unique_ptr<WernerAlgo2> algorithm(new WernerAlgo2(
-            graph, requests, paths,
-            MAIN_STYLE_EPSILON, MAIN_STYLE_WPFA_BUCKET_EPS));
-        algorithm->set_detailed_logging(false);
-        results.push_back(run_named_algorithm(
-            "WPFA", std::move(algorithm)));
-    }
-    results.push_back(run_named_algorithm(
-        "FNPR", unique_ptr<AlgorithmBase>(
-            new MyAlgo1(graph, requests, paths))));
-    results.push_back(run_named_algorithm(
-        "FLTO", unique_ptr<AlgorithmBase>(
-            new MyAlgo3(graph, requests, paths))));
-
-    if(EFiRAP::gurobi_available()) {
-        results.push_back(run_named_algorithm(
-            "EFiRAP", unique_ptr<AlgorithmBase>(
-                new EFiRAP(graph, requests, paths))));
-        results.push_back(run_named_algorithm(
-            "EFiRAP-long", unique_ptr<AlgorithmBase>(
-                new EFiRAP_longtime(graph, requests, paths))));
-    }
+    unique_ptr<WernerAlgo2> algorithm(new WernerAlgo2(
+        graph, requests, paths,
+        MAIN_STYLE_EPSILON, MAIN_STYLE_WPFA_BUCKET_EPS));
+    algorithm->set_detailed_logging(false);
+    results.push_back(run_named_algorithm("WPFA", std::move(algorithm)));
     return results;
 }
 
 TrialResult run_trial(const TrialSpec& spec,
-                      const string& input_directory,
-                      bool run_exact_reference) {
+                      const string& input_directory) {
     const string graph_path =
         input_directory + "/main_smallscale_" + spec.name + ".input";
     write_trial_graph(graph_path, spec);
@@ -346,26 +296,18 @@ TrialResult run_trial(const TrialSpec& spec,
     result.spec = spec;
     result.paths = build_shared_paths(graph, spec.requests);
 
-    if(run_exact_reference) {
-        const auto start = chrono::steady_clock::now();
-        result.optimum = solve_exact(graph, spec.requests, result.paths);
-        const auto finish = chrono::steady_clock::now();
-        result.exact_runtime_ms = chrono::duration<double, milli>(
-            finish - start).count();
-        result.has_exact = true;
-    }
+    const auto start = chrono::steady_clock::now();
+    result.optimum = solve_exact(graph, spec.requests, result.paths);
+    const auto finish = chrono::steady_clock::now();
+    result.exact_runtime_ms = chrono::duration<double, milli>(
+        finish - start).count();
+    result.has_exact = true;
 
-    result.algorithms = run_main_algorithms(
-        graph, spec.requests, result.paths);
-    if(result.has_exact) {
-        for(const AlgorithmResult& algorithm : result.algorithms) {
-            // UB is a relaxed upper bound, not a feasible schedule.
-            if(algorithm.name == "UB") continue;
-            if(algorithm.objective > result.optimum.objective + 1e-8) {
-                throw runtime_error(
-                    algorithm.name + " exceeds exhaustive OPT in " +
-                    spec.name);
-            }
+    result.algorithms = run_wpfa(graph, spec.requests, result.paths);
+    for(const AlgorithmResult& algorithm : result.algorithms) {
+        if(algorithm.objective > result.optimum.objective + 1e-8) {
+            throw runtime_error(
+                algorithm.name + " exceeds exhaustive OPT in " + spec.name);
         }
     }
     return result;
@@ -406,7 +348,7 @@ void write_trial_rows(ofstream& output, const TrialResult& result) {
 
     if(result.has_exact) {
         write_prefix();
-        output << "OPT,-1,1," << result.optimum.objective << ",0,"
+        output << "OPT,0,1," << result.optimum.objective << ",0,"
                << result.optimum.accepted_requests << ','
                << result.optimum.expected_requests << ','
                << result.exact_runtime_ms << ','
@@ -420,9 +362,9 @@ void write_trial_rows(ofstream& output, const TrialResult& result) {
     for(size_t index = 0; index < result.algorithms.size(); ++index) {
         const AlgorithmResult& algorithm = result.algorithms[index];
         write_prefix();
-        output << algorithm.name << ',' << index << ",0,"
+        output << algorithm.name << ',' << (index + 1) << ",0,"
                << algorithm.objective << ',';
-        if(result.has_exact && algorithm.name != "UB" &&
+        if(result.has_exact &&
            result.optimum.objective > OBJECTIVE_TOLERANCE) {
             output << max(
                 0.0,
@@ -441,6 +383,15 @@ using AggregateTable =
 AggregateTable aggregate_results(const vector<TrialResult>& results) {
     AggregateTable table;
     for(const TrialResult& trial : results) {
+        Aggregate& optimum = table[trial.spec.sweep]
+                                  [trial.spec.parameter_value]
+                                  ["OPT"];
+        ++optimum.samples;
+        optimum.fidelity_gain += trial.optimum.objective;
+        optimum.expected_requests += trial.optimum.expected_requests;
+        optimum.accepted_requests += trial.optimum.accepted_requests;
+        optimum.runtime_seconds += trial.exact_runtime_ms / 1000.0;
+
         for(const AlgorithmResult& algorithm : trial.algorithms) {
             Aggregate& aggregate = table[trial.spec.sweep]
                                         [trial.spec.parameter_value]
@@ -568,26 +519,20 @@ int main(int argc, char** argv) {
              << "minimum link fidelity=" << MIN_LINK_FIDELITY
              << ", default fidelity threshold="
              << DEFAULT_FIDELITY_THRESHOLD
-             << ", exact reference="
-             << (options.run_exact ? "enabled" : "disabled") << '\n'
+             << ", exact OPT=enabled\n"
              << "algorithm order=";
         for(size_t index = 0; index < names.size(); ++index) {
             if(index) cout << ',';
             cout << names[index];
         }
         cout << '\n';
-        if(!EFiRAP::gurobi_available()) {
-            cout << "[INFO] Gurobi support is disabled; EFiRAP variants are "
-                    "omitted.\n";
-        }
-
         vector<TrialResult> results;
         for(const string& sweep : selected_sweeps) {
             for(double value : sweep_values(sweep)) {
                 for(const TopologySpec& topology : topologies()) {
                     TrialResult result = run_trial(
                         make_trial(topology, sweep, value),
-                        input_directory, options.run_exact);
+                        input_directory);
                     write_trial_rows(results_output, result);
                     print_trial(result);
                     results.push_back(std::move(result));

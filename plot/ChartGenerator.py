@@ -273,6 +273,14 @@ class ChartGenerator:
             print(f"[WARN] file doesn't exist: {os.path.abspath(path)}")
             return
 
+        if os.path.basename(dataName).startswith("SmallScale_"):
+            # main_smallscale writes exactly two columns in this order.
+            self._ALGO_NAMES = ["OPT", "WPFA"]
+            self._DRAW_ORDER = [0, 1]
+            self._MARKERS = ['s', 's']
+            self._COLORS = ["#800080", "#0000FF"]
+            self._HATCHES = ['', '\\\\']
+
         with open(path, 'r', encoding='utf-8') as f:
             raw_lines = f.readlines()
         print("start generate", path)
