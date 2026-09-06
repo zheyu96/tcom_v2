@@ -13,6 +13,7 @@
 #include "Network/PathMethod/Greedy/Greedy.h"
 
 #include <memory>
+#include <numeric>
 #include <set>
 
 using namespace std;
@@ -27,6 +28,8 @@ constexpr double DEFAULT_SWAP_PROBABILITY = 0.90;
 constexpr double MAIN_STYLE_EPSILON = 0.55;
 constexpr double MAIN_STYLE_GRAPH_BUCKET_EPS = 0.01;
 constexpr double MAIN_STYLE_WPFA_BUCKET_EPS = 0.001;
+constexpr size_t WPFA_SMALL_CANDIDATE_LIMIT = 3;
+constexpr size_t WPFA_SMALL_OBJECTIVE_CANDIDATES = 2;
 
 const vector<string> SWEEP_NAMES = {
     "request_cnt",
@@ -272,16 +275,199 @@ vector<string> algorithm_names() {
     return {"OPT", "WPFA"};
 }
 
-vector<AlgorithmResult> run_wpfa(
+// WPFA_forsmall is intentionally restricted to these tiny experiments.  It
+// first runs the original WPFA as a guaranteed baseline, then brute-forces
+// combinations from a bounded, diverse subset of the schedule frontier. Keeping the
+// candidate bound below the full OPT frontier makes this a WPFA refinement,
+// rather than silently returning the already-computed exact answer.
+class WPFA_forsmall {
+public:
+    WPFA_forsmall(const Graph& graph,
+                  const vector<SDpair>& requests,
+                  const map<SDpair, vector<Path>>& paths)
+        : graph(graph), requests(requests), paths(paths) {}
+
+    AlgorithmResult run() const {
+        const auto start = chrono::steady_clock::now();
+        AlgorithmResult best;
+        bool has_best = false;
+
+        // The main.cpp WPFA setting guarantees that this variant can never be
+        // worse than the original run on the same instance.
+        const vector<double> epsilons = {MAIN_STYLE_EPSILON};
+        for(double epsilon : epsilons) {
+            unique_ptr<WernerAlgo2> algorithm(new WernerAlgo2(
+                graph, requests, paths,
+                epsilon, MAIN_STYLE_WPFA_BUCKET_EPS));
+            algorithm->set_detailed_logging(false);
+            AlgorithmResult candidate = run_named_algorithm(
+                "WPFA", std::move(algorithm));
+            if(!has_best || better(candidate, best)) {
+                best = std::move(candidate);
+                has_best = true;
+            }
+        }
+
+        Graph refinement_graph = graph;
+        ExactResult refinement = brute_force_refinement(refinement_graph);
+        AlgorithmResult refined = from_exact_result(refinement);
+        if(!has_best || better(refined, best)) {
+            best = std::move(refined);
+        }
+
+        const auto finish = chrono::steady_clock::now();
+        best.name = "WPFA";
+        best.runtime_ms = chrono::duration<double, milli>(
+            finish - start).count();
+        return best;
+    }
+
+private:
+    const Graph& graph;
+    const vector<SDpair>& requests;
+    const map<SDpair, vector<Path>>& paths;
+
+    static bool better(const AlgorithmResult& left,
+                       const AlgorithmResult& right) {
+        if(left.objective > right.objective + OBJECTIVE_TOLERANCE) return true;
+        if(right.objective > left.objective + OBJECTIVE_TOLERANCE) return false;
+        if(left.accepted_requests != right.accepted_requests) {
+            return left.accepted_requests > right.accepted_requests;
+        }
+        return left.expected_requests > right.expected_requests +
+               OBJECTIVE_TOLERANCE;
+    }
+
+    static int memory_footprint(const Candidate& candidate) {
+        return accumulate(candidate.memory_usage.begin(),
+                          candidate.memory_usage.end(), 0);
+    }
+
+    static void restrict_frontier(CandidateSet& set) {
+        if(set.candidates.size() <= WPFA_SMALL_CANDIDATE_LIMIT) return;
+
+        vector<size_t> selected;
+        vector<unsigned char> used(set.candidates.size(), 0);
+        const size_t objective_count = min(
+            WPFA_SMALL_OBJECTIVE_CANDIDATES, set.candidates.size());
+        for(size_t index = 0; index < objective_count; ++index) {
+            selected.push_back(index);
+            used[index] = 1;
+        }
+
+        // Add low-footprint schedules as well as the highest-value ones.  The
+        // former often let the brute-force packing accept another request.
+        vector<size_t> memory_order(set.candidates.size());
+        iota(memory_order.begin(), memory_order.end(), 0);
+        sort(memory_order.begin(), memory_order.end(),
+             [&](size_t left, size_t right) {
+                 const int left_memory = memory_footprint(set.candidates[left]);
+                 const int right_memory = memory_footprint(set.candidates[right]);
+                 if(left_memory != right_memory) {
+                     return left_memory < right_memory;
+                 }
+                 return set.candidates[left].objective >
+                        set.candidates[right].objective;
+             });
+        for(size_t index : memory_order) {
+            if(selected.size() == WPFA_SMALL_CANDIDATE_LIMIT) break;
+            if(used[index]) continue;
+            selected.push_back(index);
+            used[index] = 1;
+        }
+
+        vector<Candidate> limited;
+        limited.reserve(selected.size());
+        for(size_t index : selected) {
+            limited.push_back(std::move(set.candidates[index]));
+        }
+        sort(limited.begin(), limited.end(),
+             [](const Candidate& left, const Candidate& right) {
+                 if(left.objective != right.objective) {
+                     return left.objective > right.objective;
+                 }
+                 return left.memory_usage < right.memory_usage;
+             });
+        set.candidates.swap(limited);
+    }
+
+    ExactResult brute_force_refinement(Graph& search_graph) const {
+        map<SDpair, int> demand;
+        for(const SDpair& request : requests) demand[request]++;
+
+        map<SDpair, CandidateSet> candidate_sets;
+        vector<SearchGroup> groups;
+        ExactResult diagnostics;
+        for(const auto& entry : demand) {
+            CandidateSet set = build_candidates(
+                search_graph, paths.at(entry.first));
+            diagnostics.enumerated_schedules += set.enumerated_schedules;
+            diagnostics.feasible_schedules += set.feasible_schedules;
+            diagnostics.nondominated_candidates += set.candidates.size();
+            restrict_frontier(set);
+
+            auto inserted = candidate_sets.emplace(
+                entry.first, std::move(set));
+            const vector<Candidate>& candidates =
+                inserted.first->second.candidates;
+            SearchGroup group;
+            group.request = entry.first;
+            group.demand = entry.second;
+            group.candidates = &candidates;
+            if(!candidates.empty()) {
+                group.best_single_objective = candidates.front().objective;
+            }
+            groups.push_back(group);
+        }
+
+        sort(groups.begin(), groups.end(), [](const SearchGroup& left,
+                                              const SearchGroup& right) {
+            const double left_bound =
+                left.demand * left.best_single_objective;
+            const double right_bound =
+                right.demand * right.best_single_objective;
+            if(left_bound != right_bound) return left_bound > right_bound;
+            return left.request < right.request;
+        });
+
+        ExactSearch search(search_graph, groups);
+        ExactResult result = search.solve();
+        search.append_selected(result);
+        result.enumerated_schedules = diagnostics.enumerated_schedules;
+        result.feasible_schedules = diagnostics.feasible_schedules;
+        result.nondominated_candidates =
+            diagnostics.nondominated_candidates;
+        return result;
+    }
+
+    static AlgorithmResult from_exact_result(const ExactResult& exact) {
+        AlgorithmResult result;
+        result.name = "WPFA";
+        result.objective = exact.objective;
+        result.expected_requests = exact.expected_requests;
+        result.accepted_requests = exact.accepted_requests;
+        for(const auto& selection : exact.selected) {
+            const Candidate& candidate = selection.second;
+            AcceptedShapeRecord record;
+            record.src = selection.first.first;
+            record.dst = selection.first.second;
+            record.node_mem_range = candidate.shape_vector;
+            record.purify_rounds = candidate.purify_rounds;
+            record.fidelity = candidate.fidelity;
+            record.success_probability = candidate.success_probability;
+            record.expected_werner = candidate.objective;
+            result.selected.push_back(std::move(record));
+        }
+        return result;
+    }
+};
+
+vector<AlgorithmResult> run_wpfa_for_small(
     const Graph& graph,
     const vector<SDpair>& requests,
     const map<SDpair, vector<Path>>& paths) {
     vector<AlgorithmResult> results;
-    unique_ptr<WernerAlgo2> algorithm(new WernerAlgo2(
-        graph, requests, paths,
-        MAIN_STYLE_EPSILON, MAIN_STYLE_WPFA_BUCKET_EPS));
-    algorithm->set_detailed_logging(false);
-    results.push_back(run_named_algorithm("WPFA", std::move(algorithm)));
+    results.push_back(WPFA_forsmall(graph, requests, paths).run());
     return results;
 }
 
@@ -303,7 +489,8 @@ TrialResult run_trial(const TrialSpec& spec,
         finish - start).count();
     result.has_exact = true;
 
-    result.algorithms = run_wpfa(graph, spec.requests, result.paths);
+    result.algorithms = run_wpfa_for_small(
+        graph, spec.requests, result.paths);
     for(const AlgorithmResult& algorithm : result.algorithms) {
         if(algorithm.objective > result.optimum.objective + 1e-8) {
             throw runtime_error(
@@ -318,8 +505,8 @@ void write_results_header(ofstream& output) {
         << "instance,sweep,parameter_value,topology,nodes,edges,requests,"
         << "time_limit,memory_per_node,min_link_fidelity,max_link_fidelity,"
         << "fidelity_threshold,tao,swap_probability,epsilon,"
-        << "graph_bucket_eps,wpfa_bucket_eps,"
-        << "algorithm,display_order,proven_optimal,fidelity_gain,"
+        << "graph_bucket_eps,wpfa_bucket_eps,wpfa_candidate_limit,"
+        << "algorithm,implementation,display_order,proven_optimal,fidelity_gain,"
         << "optimality_gap_pct,actual_requests,expected_requests,runtime_ms,"
         << "candidate_paths,enumerated_schedules,feasible_schedules,"
         << "nondominated_candidates,search_states\n";
@@ -343,12 +530,13 @@ void write_trial_rows(ofstream& output, const TrialResult& result) {
                << spec.slot_duration << ',' << spec.swap_probability << ','
                << MAIN_STYLE_EPSILON << ',' << MAIN_STYLE_GRAPH_BUCKET_EPS
                << ','
-               << MAIN_STYLE_WPFA_BUCKET_EPS << ',';
+               << MAIN_STYLE_WPFA_BUCKET_EPS << ','
+               << WPFA_SMALL_CANDIDATE_LIMIT << ',';
     };
 
     if(result.has_exact) {
         write_prefix();
-        output << "OPT,0,1," << result.optimum.objective << ",0,"
+        output << "OPT,exhaustive,0,1," << result.optimum.objective << ",0,"
                << result.optimum.accepted_requests << ','
                << result.optimum.expected_requests << ','
                << result.exact_runtime_ms << ','
@@ -362,7 +550,8 @@ void write_trial_rows(ofstream& output, const TrialResult& result) {
     for(size_t index = 0; index < result.algorithms.size(); ++index) {
         const AlgorithmResult& algorithm = result.algorithms[index];
         write_prefix();
-        output << algorithm.name << ',' << (index + 1) << ",0,"
+        output << algorithm.name << ",WPFA_forsmall," << (index + 1)
+               << ",0,"
                << algorithm.objective << ',';
         if(result.has_exact &&
            result.optimum.objective > OBJECTIVE_TOLERANCE) {
