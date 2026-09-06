@@ -277,9 +277,25 @@ class ChartGenerator:
             # main_smallscale writes exactly two columns in this order.
             self._ALGO_NAMES = ["OPT", "WPFA"]
             self._DRAW_ORDER = [0, 1]
-            self._MARKERS = ['s', 's']
+            # OPT and WPFA are often numerically identical on the tiny test
+            # cases.  A large hollow square below a blue cross keeps both
+            # series visible even when their coordinates coincide exactly.
+            self._MARKERS = ['s', 'x']
             self._COLORS = ["#800080", "#0000FF"]
             self._HATCHES = ['', '\\\\']
+            self._LINESTYLES = ['--', '-']
+            self._LINEWIDTHS = [1.8, 2.2]
+            self._MARKER_SIZES = [17, 13]
+            self._MARKER_EDGE_WIDTHS = [2.5, 3.0]
+            self._PLOT_ZORDERS = [2, 4]
+        else:
+            self._LINESTYLES = ['-'] * len(self._ALGO_NAMES)
+            self._LINEWIDTHS = [1.0] * len(self._ALGO_NAMES)
+            self._MARKER_SIZES = [16] * len(self._ALGO_NAMES)
+            self._MARKER_EDGE_WIDTHS = [2.5] * len(self._ALGO_NAMES)
+            self._PLOT_ZORDERS = [
+                -index for index in range(len(self._ALGO_NAMES))
+            ]
 
         with open(path, 'r', encoding='utf-8') as f:
             raw_lines = f.readlines()
@@ -457,9 +473,13 @@ class ChartGenerator:
             else:
                 ax1.plot(
                     x_positions, y[i],
-                    color=self._COLORS[i], lw=1, ls="-",
-                    marker=self._MARKERS[i], markersize=16,
-                    markerfacecolor='None', markeredgewidth=2.5, zorder=-draw_idx
+                    color=self._COLORS[i],
+                    lw=self._LINEWIDTHS[i], ls=self._LINESTYLES[i],
+                    marker=self._MARKERS[i],
+                    markersize=self._MARKER_SIZES[i],
+                    markerfacecolor='None',
+                    markeredgewidth=self._MARKER_EDGE_WIDTHS[i],
+                    zorder=self._PLOT_ZORDERS[i],
                 )
             plotted.append(i)
 
