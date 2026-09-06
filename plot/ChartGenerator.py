@@ -234,23 +234,26 @@ class ChartGenerator:
     _SMALL_SCALE_Y_INTERVALS = {
         'fidelity_gain': {
             'request_cnt': (1, 5, 0.5, 2),
-            'fidelity_threshold': (1.5, 4.0, 0.25, 2),
-            'tao': (3, 3.5, 0.25, 1),
+            'fidelity_threshold': (1, 4.0, 0.25, 2),
+            'tao': (2.5, 3.5, 0.25, 1),
             'swap_prob': (2.75, 3.5, 0.25, 1),
-            'avg_memory': (1.5, 4.0, 0.25, 2),
+            'time_limit': "auto",
+            'avg_memory': (0, 4.0, 0.5, 2),
         },
         'succ_request_cnt': {
             'request_cnt': (0, 6, 0.5, 2),
             'fidelity_threshold': (1.5, 4.5, 0.25, 2),
             'tao': (1.5, 4.5, 0.25, 2),
             'swap_prob': (1.5, 4.5, 0.25, 2),
-            'avg_memory': (1.5, 4.5, 0.25, 2),
+            'time_limit': "auto",
+            'avg_memory': (0, 4.5, 0.5, 2),
         },
         'actual_req_cnt': {
             'request_cnt': (0, 6, 0.5, 2),
             'fidelity_threshold': (0, 5, 0.5, 2),
             'tao': (0, 5, 0.5, 2),
             'swap_prob': (0, 5, 0.5, 2),
+            'time_limit': "auto",
             'avg_memory': (0, 5, 0.5, 2),
         },
         'runtime': {
@@ -258,6 +261,7 @@ class ChartGenerator:
             'fidelity_threshold': (0, 0.010, 0.001, 2),
             'tao': (0, 0.010, 0.001, 2),
             'swap_prob': (0, 0.010, 0.001, 2),
+            'time_limit': "auto",
             'avg_memory': (0, 0.010, 0.001, 2),
         },
     }
@@ -415,7 +419,7 @@ class ChartGenerator:
             # Keep the compact few-point SmallScale axes readable.  The ANS
             # files use full double precision, which is useful for replay but
             # far too verbose for tick labels.
-            if x_key in ("request_cnt", "avg_memory"):
+            if x_key in ("request_cnt", "time_limit", "avg_memory"):
                 x_labels = [
                     f"{int(round(float(value)))}" for value in x_vals
                 ]
@@ -740,7 +744,7 @@ if __name__ == "__main__":
         "SmallScale": (
             [
                 "request_cnt", "fidelity_threshold", "tao",
-                "swap_prob", "avg_memory",
+                "swap_prob", "time_limit", "avg_memory",
             ],
             [
                 "fidelity_gain", "succ_request_cnt",

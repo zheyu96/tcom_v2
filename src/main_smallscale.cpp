@@ -39,6 +39,7 @@ const vector<string> SWEEP_NAMES = {
     "fidelity_threshold",
     "tao",
     "swap_prob",
+    "time_limit",
     "avg_memory",
 };
 
@@ -96,7 +97,7 @@ struct Aggregate {
 void print_help(const char* executable) {
     cout << "Usage: " << executable << " [options]\n"
          << "  --sweep NAME  run only request_cnt, fidelity_threshold, tao, "
-            "swap_prob, or avg_memory\n"
+            "swap_prob, time_limit, or avg_memory\n"
          << "  --help        show this message\n";
 }
 
@@ -154,7 +155,8 @@ const vector<double>& sweep_values(const string& sweep) {
         {"fidelity_threshold", {0.75, 0.80, 0.85, 0.90, 0.95}},
         {"tao", {0.0015, 0.0020, 0.0025, 0.0030, 0.0035}},
         {"swap_prob", {0.70, 0.75, 0.80, 0.85, 0.90}},
-        {"avg_memory", {2, 4, 6, 8, 10}},
+        {"time_limit", {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
+        {"avg_memory", {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
     };
     return values.at(sweep);
 }
@@ -189,6 +191,8 @@ TrialSpec make_trial(const TopologySpec& topology,
         trial.slot_duration = value;
     } else if(sweep == "swap_prob") {
         trial.swap_probability = value;
+    } else if(sweep == "time_limit") {
+        trial.time_limit = (int)llround(value);
     } else if(sweep == "avg_memory") {
         trial.memory_per_node = (int)llround(value);
     } else {
