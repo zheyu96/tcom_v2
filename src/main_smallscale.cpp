@@ -154,7 +154,7 @@ const vector<double>& sweep_values(const string& sweep) {
         {"fidelity_threshold", {0.75, 0.80, 0.85, 0.90, 0.95}},
         {"tao", {0.0015, 0.0020, 0.0025, 0.0030, 0.0035}},
         {"swap_prob", {0.70, 0.75, 0.80, 0.85, 0.90}},
-        {"avg_memory", {2, 3, 4, 5, 6}},
+        {"avg_memory", {2, 4, 6, 8, 10}},
     };
     return values.at(sweep);
 }
