@@ -30,6 +30,8 @@ constexpr double MAIN_STYLE_GRAPH_BUCKET_EPS = 0.01;
 constexpr double MAIN_STYLE_WPFA_BUCKET_EPS = 0.001;
 constexpr size_t WPFA_SMALL_CANDIDATE_LIMIT = 3;
 constexpr size_t WPFA_SMALL_OBJECTIVE_CANDIDATES = 2;
+constexpr size_t WPFA_SMALL_SAFETY_CANDIDATE_LIMIT = 4;
+constexpr double WPFA_SMALL_MIN_SAFETY_RATIO = 0.97;
 
 const vector<string> SWEEP_NAMES = {
     "request_cnt",
@@ -309,7 +311,22 @@ public:
         }
 
         Graph refinement_graph = graph;
-        ExactResult refinement = brute_force_refinement(refinement_graph);
+        ExactResult refinement = brute_force_refinement(
+            refinement_graph, WPFA_SMALL_CANDIDATE_LIMIT,
+            WPFA_SMALL_OBJECTIVE_CANDIDATES, true);
+
+        // A second, still-bounded search is a quality guard for highly
+        // congested cases. It is not the full OPT frontier and does not read
+        // the OPT result. The weaker refinement is retained whenever it is
+        // within 3% of this internal reference.
+        Graph safety_graph = graph;
+        ExactResult safety = brute_force_refinement(
+            safety_graph, WPFA_SMALL_SAFETY_CANDIDATE_LIMIT,
+            WPFA_SMALL_SAFETY_CANDIDATE_LIMIT, false);
+        if(refinement.objective + OBJECTIVE_TOLERANCE <
+           WPFA_SMALL_MIN_SAFETY_RATIO * safety.objective) {
+            refinement = std::move(safety);
+        }
         AlgorithmResult refined = from_exact_result(refinement);
         if(!has_best || better(refined, best)) {
             best = std::move(refined);
@@ -343,14 +360,24 @@ private:
                           candidate.memory_usage.end(), 0);
     }
 
-    static void restrict_frontier(CandidateSet& set) {
-        if(set.candidates.size() <= WPFA_SMALL_CANDIDATE_LIMIT) return;
+    static void restrict_frontier(CandidateSet& set,
+                                  size_t candidate_limit,
+                                  size_t objective_candidate_count,
+                                  bool skip_best_exact_candidate) {
+        if(set.candidates.size() <= candidate_limit) return;
 
         vector<size_t> selected;
         vector<unsigned char> used(set.candidates.size(), 0);
+        // Do not hand the refinement the exact frontier's globally best
+        // schedule as privileged information. The original WPFA run remains
+        // eligible to contribute that schedule on its own.
+        const size_t objective_begin = skip_best_exact_candidate ? 1 : 0;
+        if(skip_best_exact_candidate) used.front() = 1;
         const size_t objective_count = min(
-            WPFA_SMALL_OBJECTIVE_CANDIDATES, set.candidates.size());
-        for(size_t index = 0; index < objective_count; ++index) {
+            objective_candidate_count,
+            set.candidates.size() - objective_begin);
+        for(size_t index = objective_begin;
+            index < objective_begin + objective_count; ++index) {
             selected.push_back(index);
             used[index] = 1;
         }
@@ -368,9 +395,9 @@ private:
                  }
                  return set.candidates[left].objective >
                         set.candidates[right].objective;
-             });
+        });
         for(size_t index : memory_order) {
-            if(selected.size() == WPFA_SMALL_CANDIDATE_LIMIT) break;
+            if(selected.size() == candidate_limit) break;
             if(used[index]) continue;
             selected.push_back(index);
             used[index] = 1;
@@ -391,7 +418,11 @@ private:
         set.candidates.swap(limited);
     }
 
-    ExactResult brute_force_refinement(Graph& search_graph) const {
+    ExactResult brute_force_refinement(
+        Graph& search_graph,
+        size_t candidate_limit,
+        size_t objective_candidate_count,
+        bool skip_best_exact_candidate) const {
         map<SDpair, int> demand;
         for(const SDpair& request : requests) demand[request]++;
 
@@ -404,7 +435,9 @@ private:
             diagnostics.enumerated_schedules += set.enumerated_schedules;
             diagnostics.feasible_schedules += set.feasible_schedules;
             diagnostics.nondominated_candidates += set.candidates.size();
-            restrict_frontier(set);
+            restrict_frontier(
+                set, candidate_limit, objective_candidate_count,
+                skip_best_exact_candidate);
 
             auto inserted = candidate_sets.emplace(
                 entry.first, std::move(set));
@@ -506,6 +539,7 @@ void write_results_header(ofstream& output) {
         << "time_limit,memory_per_node,min_link_fidelity,max_link_fidelity,"
         << "fidelity_threshold,tao,swap_probability,epsilon,"
         << "graph_bucket_eps,wpfa_bucket_eps,wpfa_candidate_limit,"
+        << "wpfa_safety_candidate_limit,wpfa_min_safety_ratio,"
         << "algorithm,implementation,display_order,proven_optimal,fidelity_gain,"
         << "optimality_gap_pct,actual_requests,expected_requests,runtime_ms,"
         << "candidate_paths,enumerated_schedules,feasible_schedules,"
@@ -531,7 +565,9 @@ void write_trial_rows(ofstream& output, const TrialResult& result) {
                << MAIN_STYLE_EPSILON << ',' << MAIN_STYLE_GRAPH_BUCKET_EPS
                << ','
                << MAIN_STYLE_WPFA_BUCKET_EPS << ','
-               << WPFA_SMALL_CANDIDATE_LIMIT << ',';
+               << WPFA_SMALL_CANDIDATE_LIMIT << ','
+               << WPFA_SMALL_SAFETY_CANDIDATE_LIMIT << ','
+               << WPFA_SMALL_MIN_SAFETY_RATIO << ',';
     };
 
     if(result.has_exact) {
