@@ -65,11 +65,13 @@ else
 gurobi_flag =
 endif
 
-# Passing a non-empty gurobi_flag enables both EFiRAP Gurobi-backed EPS models.
+# Passing a non-empty gurobi_flag enables the Gurobi-backed models.
 ifneq ($(strip $(gurobi_flag)),)
 efirap_gurobi_define = -DEFIRAP_USE_GUROBI
+reps_gurobi_define = -DREPS_USE_GUROBI
 else
 efirap_gurobi_define =
+reps_gurobi_define =
 endif
 
 # --- 主要執行目標 ---
@@ -181,7 +183,7 @@ Algorithm/MyAlgo1_time/MyAlgo1_time.o: Algorithm/MyAlgo1_time/MyAlgo1_time.cpp A
 
 # 路由與路徑方法編譯規則 (REPS 需連結 Gurobi)
 Network/PathMethod/REPS/REPS.o: Network/PathMethod/REPS/REPS.cpp Network/PathMethod/REPS/REPS.h config.h $(core_headers)
-	g++ -c $(gcc_flag) Network/PathMethod/REPS/REPS.cpp $(gurobi_flag) -o Network/PathMethod/REPS/REPS.o
+	g++ -c $(gcc_flag) $(reps_gurobi_define) $(gurobi_flag) Network/PathMethod/REPS/REPS.cpp -o Network/PathMethod/REPS/REPS.o
 Network/PathMethod/Greedy/Greedy.o: Network/PathMethod/Greedy/Greedy.cpp Network/PathMethod/Greedy/Greedy.h config.h $(core_headers)
 	g++ -c $(gcc_flag) Network/PathMethod/Greedy/Greedy.cpp -o Network/PathMethod/Greedy/Greedy.o
 Network/PathMethod/QCAST/QCAST.o: Network/PathMethod/QCAST/QCAST.cpp Network/PathMethod/QCAST/QCAST.h config.h $(core_headers)
