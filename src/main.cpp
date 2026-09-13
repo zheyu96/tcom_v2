@@ -550,9 +550,9 @@ int main(){
 
 
     // vector<string> X_names = {"time_limit", "request_cnt", "num_nodes", "avg_memory", "tao"};
-    vector<string> X_names = {"path_set"};
+    //vector<string> X_names = {"path_set"};
    
-    //vector<string> X_names = {"request_cnt","time_limit","fidelity_threshold","avg_memory", "tao"};
+    vector<string> X_names = {"request_cnt","time_limit","fidelity_threshold","avg_memory", "tao"};
     // Set EXPERIMENT_X_NAME (for example, EXPERIMENT_X_NAME=tao) to rerun a
     // single sweep without truncating or recomputing the other result files.
     if(const char* selected_x = std::getenv("EXPERIMENT_X_NAME")) {
