@@ -446,7 +446,7 @@ int main(){
     change_parameter["request_cnt"] = {80,100,120,140,160};
     change_parameter["num_nodes"] = {30, 40, 50, 60, 70};
     change_parameter["min_fidelity"] = {0.6, 0.7, 0.8, 0.9, 0.95};
-    change_parameter["avg_memory"] = {4, 6, 8, 10, 12, 16, 20};
+    change_parameter["avg_memory"] = {4, 6, 8, 10, 12,14, 16, 20};
     change_parameter["mem_vary"] = {1, 2, 3, 4, 5};
     change_parameter["topo_vary"] = {0, 1, 2};
     change_parameter["mem_distribution"] = {0, 1, 2, 3};
@@ -552,7 +552,7 @@ int main(){
     // vector<string> X_names = {"time_limit", "request_cnt", "num_nodes", "avg_memory", "tao"};
     //vector<string> X_names = {"path_set"};
    
-    vector<string> X_names = {"request_cnt","time_limit","fidelity_threshold","avg_memory", "tao"};
+    vector<string> X_names = {/*"request_cnt","time_limit","fidelity_threshold",*/"avg_memory", "tao"};
     // Set EXPERIMENT_X_NAME (for example, EXPERIMENT_X_NAME=tao) to rerun a
     // single sweep without truncating or recomputing the other result files.
     if(const char* selected_x = std::getenv("EXPERIMENT_X_NAME")) {
