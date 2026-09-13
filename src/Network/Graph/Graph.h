@@ -46,7 +46,7 @@ class Graph {
     vector<Node> nodes;
 
     vector<double> boundary, cnt;
-    map<pair<int, int> , double> F_init, entangle_succ_prob;
+    map<pair<int, int> , double> F_init, entangle_succ_prob, link_distance_km;
 
     string file_name;
     Path get_path(int from, int to);
@@ -79,6 +79,7 @@ public:
     double get_fidelity_threshold();
     double get_pure_fidelity();
     double get_F_init(int u, int v);
+    double get_link_distance_km(int u, int v);
     double get_delta_P();
     // Physical-layer constants of Sec. III-A, exposed so that reports and
     // figures quote the values the model actually ran with.

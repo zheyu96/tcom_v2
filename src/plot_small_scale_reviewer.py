@@ -3,6 +3,7 @@
 
 import argparse
 import csv
+import math
 import re
 from pathlib import Path
 
@@ -138,25 +139,33 @@ def read_results(filename):
 
 
 def read_graph(filename, metadata):
-    tokens = filename.read_text(encoding="utf-8").split()
-    cursor = 0
-    node_count = int(tokens[cursor])
-    cursor += 1
-    memory_offsets = [int(tokens[cursor + index]) for index in range(node_count)]
-    cursor += node_count
-    edge_count = int(tokens[cursor])
-    cursor += 1
+    lines = [line.strip() for line in
+             filename.read_text(encoding="utf-8").splitlines()
+             if line.strip()]
+    node_count = int(lines[0])
+    memory_offsets = [int(lines[1 + index]) for index in range(node_count)]
+    edge_count = int(lines[1 + node_count])
     edges = []
-    for _ in range(edge_count):
-        left = int(tokens[cursor])
-        right = int(tokens[cursor + 1])
-        ratio = float(tokens[cursor + 2])
-        cursor += 3
-        fidelity = (
-            metadata["min_link_fidelity"]
-            + ratio
-            * (metadata["max_link_fidelity"] - metadata["min_link_fidelity"])
-        )
+    first_edge_line = node_count + 2
+    for edge_index in range(edge_count):
+        fields = lines[first_edge_line + edge_index].split()
+        if len(fields) not in (3, 4):
+            raise ValueError(f"invalid edge line in {filename}: {fields}")
+        left, right = int(fields[0]), int(fields[1])
+        edge_value = float(fields[2])
+        if len(fields) == 4:
+            if fields[3] != "km":
+                raise ValueError(f"unsupported edge unit in {filename}: {fields[3]}")
+            fidelity = 0.25 + 0.75 * math.exp(
+                -metadata["gamma_per_km"] * edge_value)
+        else:
+            # Archived small-scale inputs stored a normalized fidelity ratio.
+            fidelity = (
+                metadata["min_link_fidelity"]
+                + edge_value
+                * (metadata["max_link_fidelity"]
+                   - metadata["min_link_fidelity"])
+            )
         edges.append((left, right, fidelity))
     if node_count != metadata["nodes"] or edge_count != metadata["edges"]:
         raise ValueError(f"graph metadata mismatch in {filename}")

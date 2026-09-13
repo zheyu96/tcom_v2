@@ -39,25 +39,56 @@ Graph::Graph(string filename, int _time_limit, double _swap_prob, int avg_memory
     }
     int num_edges;
     graph_file >> num_edges;
+    string edge_line;
+    getline(graph_file, edge_line); // consume the remainder of the edge-count line
     avg_entangle_prob = 0;
     // Paper Eq. (entangling): xi = floor(delta / tau_att), where delta = tao here.
     int xi = (entangle_time > 0.0) ? (int)floor(tao / entangle_time) : 1;
     if(xi < 1) xi = 1;
     for(int i = 0; i < num_edges; i++) {
         int v, u;
-        double f_raw,entangle_prob;
-        graph_file >> v >> u >> f_raw;
+        double edge_value, entangle_prob;
+        if(!getline(graph_file, edge_line)) {
+            throw runtime_error(
+                "Missing edge " + to_string(i) + " in input file: " + filename);
+        }
+        istringstream edge_stream(edge_line);
+        if(!(edge_stream >> v >> u >> edge_value)) {
+            throw runtime_error(
+                "Invalid edge " + to_string(i) + " in input file: " + filename);
+        }
         assert(v != u);
-        // The third field in the input is interpreted as a fidelity ratio (paper Sec. III-A).
-        double f_init = f_raw * (max_fidelity - min_fidelity) + min_fidelity;
-
-        // Paper III-A1: w_e = (4F_e - 1)/3 = exp(-Gamma * l)  =>  l = -ln(w_e) / Gamma.
-        double w_e = (4.0 * f_init - 1.0) / 3.0;
+        string unit;
         double l_uv;
-        if(w_e <= 0.0) {
-            l_uv = 1e9;                       // F_e in [1/4, ...]; clamp degenerate case.
+        double f_init;
+        if(edge_stream >> unit) {
+            string trailing;
+            if(unit != "km" || edge_stream >> trailing) {
+                throw runtime_error(
+                    "Edge " + to_string(i) +
+                    " must use the format 'u v distance km' in: " + filename);
+            }
+            if(!isfinite(edge_value) || edge_value < 0.0) {
+                throw runtime_error(
+                    "Edge distance must be a finite non-negative number in: " +
+                    filename);
+            }
+            l_uv = edge_value;
+            // Paper III-A1: elementary-pair fidelity is determined directly
+            // by the scaled physical link length supplied by the topology.
+            f_init = 0.25 + 0.75 * exp(-Gamma * l_uv);
         } else {
-            l_uv = -log(w_e) / Gamma;
+            // Backward compatibility for archived three-column inputs.  New
+            // topology files always carry the explicit "km" marker above.
+            const double fidelity_ratio = edge_value;
+            f_init = fidelity_ratio * (max_fidelity - min_fidelity) +
+                     min_fidelity;
+            const double w_e = (4.0 * f_init - 1.0) / 3.0;
+            if(w_e <= 0.0 || Gamma <= 0.0) {
+                l_uv = 1e9;
+            } else {
+                l_uv = -log(w_e) / Gamma;
+            }
         }
         // Paper III-A2: Pr(u,v) = 1 - (1 - exp(-lambda * l))^xi.
         double one_shot = exp(-entangle_lambda * l_uv);
@@ -67,6 +98,8 @@ Graph::Graph(string filename, int _time_limit, double _swap_prob, int avg_memory
         adj_list[u].push_back(v);
         F_init[{v, u}] = f_init;
         F_init[{u, v}] = f_init;
+        link_distance_km[{v, u}] = l_uv;
+        link_distance_km[{u, v}] = l_uv;
         entangle_succ_prob[{v, u}] = entangle_prob;
         entangle_succ_prob[{u, v}] = entangle_prob;
         avg_entangle_prob += entangle_prob;
@@ -118,6 +151,11 @@ const vector<double>& Graph::get_cnt() const { return cnt; }
 double Graph::get_F_init(int u, int v) {
     assert(adj_set[u].count(v));
     return F_init[{u, v}];
+}
+
+double Graph::get_link_distance_km(int u, int v) {
+    assert(adj_set[u].count(v));
+    return link_distance_km[{u, v}];
 }
 
 const map<pair<int, int>, double>& Graph::get_F_init() const { return F_init; }

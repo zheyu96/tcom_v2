@@ -238,7 +238,7 @@ class ChartGenerator:
             'tao': (2.5, 3.5, 0.25, 1),
             'swap_prob': (2.75, 3.5, 0.25, 1),
             'time_limit': "auto",
-            'avg_memory': (0, 4.0, 0.5, 2),
+            'avg_memory': (1, 4.0, 0.5, 2),
         },
         'succ_request_cnt': {
             'request_cnt': (0, 6, 0.5, 2),
@@ -618,7 +618,7 @@ class ChartGenerator:
         if is_small_scale and x_key == "tao":
             Xlabel_text = "Slot Duration (ms)"
         elif is_small_scale and x_key == "avg_memory":
-            Xlabel_text = "Memory per Node"
+            Xlabel_text = "Average Memory Limit"
         else:
             Xpow_disp_unit = " s" if x_key in ("tao", "entangle_time") else ""
             Xlabel_text = self._AXIS_NAME.get(x_key, x_key) + self._gen_power_suffix(Xpow, Xpow_disp_unit)

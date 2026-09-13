@@ -1,12 +1,103 @@
 """Waxman, Grid, and RGG topology generator for the experiment suite."""
+import csv
+import hashlib
+import os
 import sys
 import networkx as nx
 import random
 import numpy
 import math
+import tempfile
+import time
+from contextlib import contextmanager
 from math import ceil
+from pathlib import Path
 
 RANGE = 300
+
+
+@contextmanager
+def exclusive_file_lock(filename):
+    """Serialize updates from the experiment's parallel generator processes."""
+    with open(filename, "a+b") as lock_file:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"0")
+            lock_file.flush()
+        lock_file.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            while True:
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            lock_file.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def record_topology_distance(
+        output_filename, topology, node_count, edge_count, average_km, seed):
+    """Upsert this generated instance into the shared topology-distance CSV."""
+    input_path = Path(output_filename).resolve()
+    if input_path.parent.name.lower() == "input":
+        data_directory = input_path.parent.parent
+        answer_directory = data_directory / "ans"
+        displayed_input = input_path.relative_to(data_directory).as_posix()
+    else:
+        answer_directory = input_path.parent
+        displayed_input = input_path.name
+    answer_directory.mkdir(parents=True, exist_ok=True)
+
+    summary_path = answer_directory / "topology_average_distance.csv"
+    lock_key = hashlib.sha256(
+        str(summary_path).encode("utf-8")).hexdigest()[:20]
+    lock_path = Path(tempfile.gettempdir()) / (
+        "topology_average_distance_" + lock_key + ".lock")
+    fieldnames = [
+        "topology", "input_file", "seed", "nodes", "edges",
+        "topology_scale_km", "average_link_distance_km",
+    ]
+    new_row = {
+        "topology": topology,
+        "input_file": displayed_input,
+        "seed": "" if seed is None else seed,
+        "nodes": node_count,
+        "edges": edge_count,
+        "topology_scale_km": RANGE,
+        "average_link_distance_km": format(average_km, ".17g"),
+    }
+
+    with exclusive_file_lock(lock_path):
+        rows = {}
+        if summary_path.exists():
+            with summary_path.open(newline="", encoding="utf-8") as summary:
+                for row in csv.DictReader(summary):
+                    if row.get("input_file"):
+                        rows[row["input_file"]] = row
+        rows[displayed_input] = new_row
+
+        temporary_path = summary_path.with_suffix(".csv.tmp")
+        with temporary_path.open("w", newline="", encoding="utf-8") as output:
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(
+                rows[key]
+                for key in sorted(
+                    rows,
+                    key=lambda item: (rows[item].get("topology", ""), item))
+            )
+        os.replace(temporary_path, summary_path)
 
 def dist(p1, p2):
     (x1, y1) = p1
@@ -304,17 +395,12 @@ if topology_radius is not None:
 
 path = filename
 
-# Keep topology and link fidelity identical across the mem_vary sweep.  The
-# historical generator drew N values from randint(-1, 1) before drawing link
-# fidelities.  Advancing a dedicated fidelity RNG by that same baseline
-# sequence preserves all existing mem_vary=1 inputs while allowing the memory
-# RNG to use a different range without perturbing any link value.
+# Keep topology and link lengths identical across the memory-distribution
+# sweeps.  Memory allocation uses its own RNG and therefore cannot perturb the
+# topology coordinates from which physical link lengths are calculated.
 distribution_seed = (experiment_seed if experiment_seed is not None
                      else random.SystemRandom().randrange(2 ** 63))
 memory_rng = random.Random(distribution_seed)
-fidelity_rng = random.Random(distribution_seed)
-for _ in range(num_of_node):
-    fidelity_rng.randint(-1, 1)
 
 memory_offsets, allocated_memories = generate_memory_offsets(
     G, memory_distribution, avg_memory, mem_vary, memory_rng)
@@ -341,30 +427,25 @@ with open(path, 'w') as f:
             e0 = str(e[0])
             e1 = str(e[1])
             dis = RANGE * dist(positions[e[0]], positions[e[1]])  # distance
-            # F = random.random()*(max_fidelity-min_fidelity) + min_fidelity  # fidelity
-            # ratio_list=[0.98,0.7]
-            # ratio=numpy.random.choice(ratio_list,p=[0.3,0.7])
-            # ratio = numpy.random.normal(0.7, 0.1)
-            #dif = abs(1 - ratio)
-            #ratio = 1 - dif
-            #if ratio > 0.95:
-            #    ratio = 0.95
-            #if ratio < 0.55:
-            #    ratio = 0.55
-            # 70% link 在 sweet spot (需 purify), 30% 高 fid (非 purify 也能過)
-            # F_init = ratio * 0.15 + 0.80, 最低 F_init >= 0.80 (ratio >= 0)
-            ratio = fidelity_rng.uniform(0.75, 0.99)
-            if ratio > 0.99:
-                ratio = 0.98
-            if ratio < 0.75:
-                ratio = 0.75
-            F = ratio
-            print(e0 + " " + e1 + " " + str(F), file=f)
+            # The explicit unit marker distinguishes physical lengths from
+            # legacy three-column files containing a random fidelity ratio.
+            # Graph applies F_e = 1/4 + 3/4 exp(-Gamma * l_e).
+            print(e0 + " " + e1 + " " + str(dis) + " km", file=f)
             avg_l += dis
     avg_l /= num_of_edge
 
 print("num_of_edge =", num_of_edge, file=sys.stderr)
 print("avg_edge_len =", avg_l, file=sys.stderr)
+record_topology_distance(
+    filename, topology_model, num_of_node, num_of_edge, avg_l,
+    experiment_seed)
+print(
+    "distance_summary =",
+    str((Path(filename).resolve().parent.parent / "ans" /
+         "topology_average_distance.csv")
+        if Path(filename).resolve().parent.name.lower() == "input"
+        else Path(filename).resolve().parent / "topology_average_distance.csv"),
+    file=sys.stderr)
 print("memory_offset_min =", min(memory_offsets), file=sys.stderr)
 print("memory_offset_max =", max(memory_offsets), file=sys.stderr)
 print("memory_offset_mean =", sum(memory_offsets) / len(memory_offsets), file=sys.stderr)

@@ -63,6 +63,7 @@ constexpr double TIME_ETA = 0.001;
 constexpr double DELTA_P = 0.01;
 constexpr double ENTANGLE_LAMBDA = 0.045;
 constexpr double ENTANGLE_TIME = 0.00025;
+constexpr double FIDELITY_GAMMA = 0.0044;
 
 // Identical to WernerAlgo2's purification-memory table.  Row r describes a
 // link produced with r pumping rounds; its order is reversed below exactly as
@@ -79,6 +80,13 @@ struct EdgeSpec {
     int right;
     double fidelity_ratio;
 };
+
+double edge_length_km(const EdgeSpec& edge) {
+    const double fidelity = MIN_LINK_FIDELITY + edge.fidelity_ratio *
+        (MAX_LINK_FIDELITY - MIN_LINK_FIDELITY);
+    const double werner = Purification::fidelity_to_werner(fidelity);
+    return -log(werner) / FIDELITY_GAMMA;
+}
 
 struct CaseSpec {
     string name;
@@ -199,7 +207,7 @@ void write_graph_file(const string& filename, const CaseSpec& spec) {
     output << setprecision(17);
     for(const EdgeSpec& edge : spec.edges) {
         output << edge.left << ' ' << edge.right << ' '
-               << edge.fidelity_ratio << '\n';
+               << edge_length_km(edge) << " km\n";
     }
 }
 
@@ -210,7 +218,7 @@ Graph load_graph(const string& filename, const CaseSpec& spec) {
         FIDELITY_THRESHOLD, DECOHERENCE_A, DECOHERENCE_B,
         DECOHERENCE_N, DECOHERENCE_T, SLOT_DURATION, Z_MIN,
         SMALL_SCALE_BUCKET_EPS, TIME_ETA, DELTA_P,
-        ENTANGLE_LAMBDA, ENTANGLE_TIME);
+        ENTANGLE_LAMBDA, ENTANGLE_TIME, FIDELITY_GAMMA);
 }
 
 void enumerate_paths_dfs(const Graph& graph,
@@ -547,7 +555,8 @@ public:
           usage(graph.get_num_nodes() * graph.get_time_limit(), 0),
           capacities(usage.size(), 0),
           suffix_upper_bound(this->groups.size() + 1, 0.0),
-          current_selection(this->groups.size()) {
+          current_selection(this->groups.size()),
+          best_selection(this->groups.size()) {
         for(int node = 0; node < graph.get_num_nodes(); ++node) {
             for(int time = 0; time < graph.get_time_limit(); ++time) {
                 capacities[node * graph.get_time_limit() + time] =
@@ -1208,14 +1217,11 @@ void write_instance_rows(ofstream& output,
     for(const EdgeSpec& edge : spec.edges) {
         const double fidelity = graph.get_F_init(edge.left, edge.right);
         const double werner = Purification::fidelity_to_werner(fidelity);
-        // Sec. III-A1 inverted: w_e = exp(-Gamma * l)  =>  l = -ln(w_e)/Gamma.
-        const double length = graph.get_Gamma() > 0.0 && werner > 0.0
-            ? -log(werner) / graph.get_Gamma()
-            : 0.0;
         link(edge.left, edge.right, "fidelity_ratio", edge.fidelity_ratio);
         link(edge.left, edge.right, "fidelity", fidelity);
         link(edge.left, edge.right, "werner", werner);
-        link(edge.left, edge.right, "length_km", length);
+        link(edge.left, edge.right, "length_km",
+             graph.get_link_distance_km(edge.left, edge.right));
         link(edge.left, edge.right, "entangle_probability",
              graph.get_entangle_succ_prob(edge.left, edge.right));
     }

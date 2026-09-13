@@ -218,7 +218,7 @@ void write_trial_graph(const string& filename, const TrialSpec& spec) {
     output << spec.edges.size() << '\n' << setprecision(17);
     for(const EdgeSpec& edge : spec.edges) {
         output << edge.left << ' ' << edge.right << ' '
-               << edge.fidelity_ratio << '\n';
+               << edge_length_km(edge) << " km\n";
     }
 }
 
@@ -229,7 +229,7 @@ Graph load_trial_graph(const string& filename, const TrialSpec& spec) {
         spec.fidelity_threshold, DECOHERENCE_A, DECOHERENCE_B,
         DECOHERENCE_N, DECOHERENCE_T, spec.slot_duration, Z_MIN,
         MAIN_STYLE_GRAPH_BUCKET_EPS, TIME_ETA, DELTA_P,
-        ENTANGLE_LAMBDA, ENTANGLE_TIME);
+        ENTANGLE_LAMBDA, ENTANGLE_TIME, FIDELITY_GAMMA);
 }
 
 map<SDpair, vector<Path>> build_shared_paths(
