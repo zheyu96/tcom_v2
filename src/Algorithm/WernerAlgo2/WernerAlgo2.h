@@ -61,7 +61,7 @@ private:
     };
 
     struct DPParam{
-        double eps_bucket,Zhat,Zmin,eta,T,deltaP;
+        double eps_bucket,invLogQ,Zhat,Zmin,eta,T,deltaP;
         int tau_max;
     }dpp;
     // ===== 參數 / 對偶變數（風格比照 MyAlgo1） =====
@@ -81,9 +81,9 @@ private:
 
     // 在固定 path 上做 Werner DP，填滿 L_all（t=1..T-1）
     void run_dp_in_t(const Path& path, const DPParam& dpp, int t,
-                     const vector<double>& edge_werner,
-                     const vector<double>& edge_entangle_prob,
                      const vector<double>& swap_log_prob,
+                     const vector<vector<double>>& leaf_Z,
+                     const vector<vector<double>>& leaf_P,
                      DPTable& dp_table);
 
     // ===== 基本操作（Pareto / 分桶 / 存儲 / 回溯 / 評分） =====
@@ -95,7 +95,8 @@ private:
                                  const DPTable& dp_table);
     int split_dis(int s, int d, const WernerAlgo2::ZLabel& L);
     pair<double,WernerAlgo2::ZLabel> eval_best_J(
-        int s, int d, int t, double alp, const DPTable& dp_table);
+        int s, int d, int t, double alp, const DPTable& dp_table,
+        const vector<double>& terminal_factors);
     int purify_time=3;
     double Purify_in_vt[4][5]={
         {1,1},
@@ -106,8 +107,8 @@ private:
 
     ZLabel gen_leaf_label(int s, int e, int st, int tlen,
                           int path_a, int path_b,
-                          double edge_werner,
-                          double edge_entangle_prob);
+                          double leaf_Z,
+                          double leaf_P);
     // 暫存最近一次 oracle 回傳 shape 對應的 purify rounds
     map<Shape_vector, vector<int>> shape_purify_map;
     string experiment_label;  // 目前實驗的標籤 (例如 "request_cnt=80")
@@ -124,12 +125,22 @@ private:
     // one group share the same candidate paths and therefore the same DP
     // frontier; only their alpha value differs when the frontier is scored.
     vector<vector<int>> request_groups;
+    struct PathMetadata {
+        const Path* path = nullptr;
+        int path_index = -1;
+        vector<int> request_indices;
+        vector<double> swap_log_prob;
+        vector<vector<double>> leaf_Z;
+        vector<vector<double>> leaf_P;
+    };
+    vector<PathMetadata> path_metadata;
     // One reusable DP arena per OpenMP worker avoids rebuilding thousands of
     // nested vectors on every oracle call.
     int oracle_worker_count = 1;
     vector<DPTable> dp_workspaces;
-    set<int> dirty_nodes;
-    set<int> dirty_alpha_idxs;
+    vector<vector<unsigned char>> oracle_available;
+    vector<unsigned char> dirty_nodes;
+    vector<unsigned char> dirty_alpha_idxs;
 };
 
 #endif // __WERNER_ALGO2_H
