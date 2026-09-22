@@ -52,7 +52,7 @@ private:
     };
 
     struct DPParam{
-        double eps_bucket,Zhat,Zmin,eta,T;
+        double eps_bucket,invLogQ,Zhat,Zmin,eta,T;
     }dpp;
     // ===== 參數 / 對偶變數（風格比照 MyAlgo1） =====
     double epsilon = 0.35;
@@ -80,7 +80,8 @@ private:
                                  const DPTable& dp_table);
     int split_dis(int s, int d, const WernerAlgo::ZLabel& L);
     pair<double,WernerAlgo::ZLabel> eval_best_J(
-        int s, int d, int t, double alp, const DPTable& dp_table);
+        int s, int d, int t, double alp, const DPTable& dp_table,
+        const vector<double>& terminal_factors);
 
     // --- Oracle cache for incremental separation_oracle ---
     struct OracleCache {
@@ -93,10 +94,19 @@ private:
     // Requests with the same SD pair share path frontiers; alpha is applied
     // only when the finished frontier is scored.
     vector<vector<int>> request_groups;
+    struct PathMetadata {
+        const Path* path = nullptr;
+        int path_index = -1;
+        vector<int> request_indices;
+        vector<double> edge_Z;
+        double path_pr = 0.0;
+    };
+    vector<PathMetadata> path_metadata;
     int oracle_worker_count = 1;
     vector<DPTable> dp_workspaces;
-    set<int> dirty_nodes;
-    set<int> dirty_alpha_idxs;  // alpha 被更新的 request indices
+    vector<vector<unsigned char>> oracle_available;
+    vector<unsigned char> dirty_nodes;
+    vector<unsigned char> dirty_alpha_idxs;  // alpha 被更新的 request indices
 };
 
 #endif // __WERNER_ALGO_H

@@ -119,15 +119,12 @@ void WernerAlgo2::variable_initialize() {
             path_metadata.push_back(std::move(metadata));
         }
     }
-    oracle_worker_count = max(1, omp_get_max_threads());
-    // This DP is memory-allocation/bandwidth heavy. When OpenMP is using every
-    // processor by default, leave one logical processor free to reduce
-    // allocator and OS contention. A smaller externally configured OpenMP
-    // thread limit is used unchanged.
-    if(oracle_worker_count >= 8 &&
-       oracle_worker_count == omp_get_num_procs()) {
-        oracle_worker_count--;
-    }
+    // Purification makes this frontier heavier than ZFA's, but it is still
+    // memory-bandwidth/allocator bound. More than 24 workers slowed the
+    // 96-vCPU benchmark, so retain only the useful parallelism.
+    constexpr int MAX_ORACLE_WORKERS = 24;
+    oracle_worker_count = max(
+        1, min(MAX_ORACLE_WORKERS, omp_get_max_threads()));
     dp_workspaces.clear();
     dp_workspaces.resize(oracle_worker_count);
     dirty_nodes.assign(V, 0);
@@ -186,8 +183,10 @@ Shape_vector WernerAlgo2::separation_oracle(){
 
     // Each DP workspace is local to its task. The final minimum reduction is
     // deliberately kept serial below to retain the original tie behavior.
-    #pragma omp parallel for schedule(dynamic, 1) if(tasks.size() > 1) \
-        num_threads(oracle_worker_count)
+    const int active_worker_count = max(
+        1, min(oracle_worker_count, (int)tasks.size()));
+    #pragma omp parallel for schedule(dynamic, 1) if(active_worker_count > 1) \
+        num_threads(active_worker_count)
     for(int task_index = 0; task_index < (int)tasks.size(); task_index++) {
             const PathTask& task = tasks[task_index];
             const PathMetadata& metadata = *task.metadata;
