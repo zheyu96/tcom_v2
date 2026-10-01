@@ -14,6 +14,7 @@ data/ans/*.csv
 *cdf
 /src/main_time
 /src/main_time.exe
+/src/main_runtime.exe
 /src/main_small_scale
 /src/main_small_scale.exe
 __pycache__/

@@ -114,7 +114,7 @@ class ChartGenerator:
     _FONT_SIZE_BASE = 30
 
     _RIGHT_TOP  = (0.6, 0.85)
-    _LEFT_TOP   = (0.45, 0.85)
+    _LEFT_TOP   = (0.45, 0.83)
     _RIGHT_DOWN = (0.60, 0.13)
     _LEFT_DOWN  = (0.40, 0.13)
 
@@ -173,12 +173,12 @@ class ChartGenerator:
 
     _Y_INTERVALS = {
         'fidelity_gain':{
-            'request_cnt': (20, 120, 5, 4),
-            'tao': (0, 90, 5, 6), 'time_limit': (20, 80, 5, 4),
+            'request_cnt': (20, 125, 5, 4),
+            'tao': (0, 100, 5, 6), 'time_limit': (20, 80, 5, 4),
             'avg_memory': (20, 80, 5, 4), 'mem_vary': (30,90,5,6),
-            'topo_vary': (0,90,5,4), 'mem_distribution': (0,90,5,4),
+            'topo_vary': (0,90,5,4), 'mem_distribution': (0,100,5,4),
             'path_set': (0,90,5,4),
-            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 95, 5, 6),
+            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 100, 5, 4),
             'swap_prob': (10, 80, 5, 4), 'entangle_time': "auto",
             'hop_count':(10,90,5,3),
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
@@ -207,10 +207,10 @@ class ChartGenerator:
         'actual_req_cnt':{
             'request_cnt': (40,165,5,8),
             'tao': (0,130,5,6), 'time_limit': (50,110,5,5),
-            'avg_memory': (35,115,5,7), 'mem_vary': (40,110,5,4),
-            'topo_vary': (0,120,5,4), 'mem_distribution': (0,120,5,4),
+            'avg_memory': (30,120,5,6), 'mem_vary': (40,120,5,4),
+            'topo_vary': (0,120,5,4), 'mem_distribution': (0,150,5,4),
             'path_set': (0,120,5,4),
-            'min_fidelity': "auto", 'fidelity_threshold': (0,125,5,5),
+            'min_fidelity': "auto", 'fidelity_threshold': (0,140,5,4),
             'swap_prob': (50,100,5,5), 'hop_count': "auto",
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
@@ -257,7 +257,7 @@ class ChartGenerator:
             'avg_memory': (0, 5, 0.5, 2),
         },
         'runtime': {
-            'request_cnt': (0, 0.010, 0.001, 2),
+            'request_cnt': (0, 0.010, 0.001, 1),
             'fidelity_threshold': (0, 0.010, 0.001, 2),
             'tao': (0, 0.010, 0.001, 2),
             'swap_prob': (0, 0.010, 0.001, 2),
@@ -448,10 +448,10 @@ class ChartGenerator:
 
         if x_key == "mem_distribution":
             distribution_labels = {
-                0: "Uniform",
+                0: "Fixed",
                 1: "Degree-\nProportional",
                 2: "Inverse-\nDegree",
-                3: "Heterogeneous",
+                3: "Uniform",
             }
             x_labels = [
                 distribution_labels.get(int(float(value)), str(value))

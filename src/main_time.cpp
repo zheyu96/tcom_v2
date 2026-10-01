@@ -18,6 +18,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <omp.h>
 
 #include "Algorithm/AlgorithmBase/AlgorithmBase.h"
 #include "Algorithm/EFiRAP/EFiRAP.h"
@@ -38,36 +39,58 @@
 #include "Network/Graph/Graph.h"
 #include "Network/PathMethod/Greedy/Greedy.h"
 
+#ifndef RUNTIME_BENCHMARK_REQUIRE_ALL_ALGORITHMS
+#define RUNTIME_BENCHMARK_REQUIRE_ALL_ALGORITHMS 0
+#endif
+
+#ifndef RUNTIME_BENCHMARK_LOG_NAME
+#define RUNTIME_BENCHMARK_LOG_NAME "main_time"
+#endif
+
+#ifndef RUNTIME_BENCHMARK_INPUT_STEM
+#define RUNTIME_BENCHMARK_INPUT_STEM "main_time"
+#endif
+
+#ifndef RUNTIME_BENCHMARK_RAW_FILENAME
+#define RUNTIME_BENCHMARK_RAW_FILENAME "main_time_runtime_raw.csv"
+#endif
+
+#ifndef RUNTIME_BENCHMARK_SUMMARY_FILENAME
+#define RUNTIME_BENCHMARK_SUMMARY_FILENAME "main_time_runtime_summary.csv"
+#endif
+
 using namespace std;
 
 namespace {
 
 // ==================== Runtime experiment controls ====================
-// Edit these two values and rebuild main_time to change ZFA2/WPFA's
-// approximation and DP bucket settings for all three runtime sweeps.
-constexpr double MAIN_TIME_EPSILON = 0.55;
+// Rebuild the runtime driver after changing WPFA precision or thread count.
+constexpr double MAIN_TIME_EPSILON = 0.35;
 constexpr double MAIN_TIME_BUCKET_EPS = 0.0001;
+constexpr int MAIN_TIME_THREADS = 1;
 // =====================================================================
 
 const string REQUEST_COUNT = "request_cnt";
 const string FIDELITY_THRESHOLD = "fidelity_threshold";
 const string TIME_LIMIT = "time_limit";
+const vector<string> ALL_ALGORITHMS{
+    "ZFA_UB", "ZFA", "ZFA2", "MyAlgo1", "MyAlgo3",
+    "EFiRAP", "EFiRAP_longtime"};
 
 struct Config {
-    string input_pattern = "../data/input/main_time_round_{}.input";
+    string input_pattern =
+        "../data/input/" RUNTIME_BENCHMARK_INPUT_STEM "_round_{}.input";
     string output_directory = "../data/ans";
     string python_command = "python3";
     vector<string> sweeps{REQUEST_COUNT, FIDELITY_THRESHOLD, TIME_LIMIT};
     vector<double> request_counts{80, 100, 120, 140, 160};
-    vector<double> fidelity_thresholds{
-        0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95};
-    vector<double> time_limits{5, 7, 9, 11, 13, 15, 17, 19};
-    vector<string> algorithms{
-        "ZFA_UB", "ZFA", "ZFA2", "MyAlgo1", "MyAlgo3",
-        "EFiRAP", "EFiRAP_longtime"};
+    vector<double> fidelity_thresholds{0.70, 0.75, 0.80, 0.85, 0.90};
+    vector<double> time_limits{7, 9, 11, 13, 15, 17};
+    vector<string> algorithms = ALL_ALGORITHMS;
     int instances = 5;
-    int repetitions = 1;
-    int warmups = 0;
+    int repetitions = 3;
+    int warmups = 1;
+    int threads = MAIN_TIME_THREADS;
     uint32_t seed = 20260820U;
     // These two parameters belong to ZFA2/WPFA. Other algorithms retain
     // their original parameter settings so the runtime comparison stays
@@ -235,13 +258,15 @@ void print_usage(const char* executable) {
         << "Options:\n"
         << "  --sweeps LIST              request_cnt,fidelity_threshold,time_limit\n"
         << "  --request-counts LIST      Default: 80,100,120,140,160\n"
-        << "  --fidelity-thresholds LIST Default: 0.50,0.55,...,0.95\n"
-        << "  --time-limits LIST         Default: 5,7,9,11,13,15,17,19\n"
+        << "  --fidelity-thresholds LIST Default: 0.70,0.75,0.80,0.85,0.90\n"
+        << "  --time-limits LIST         Default: 7,9,11,13,15,17\n"
         << "  --algorithms LIST          ZFA_UB,ZFA,ZFA2,MyAlgo1,MyAlgo3,\n"
         << "                             EFiRAP,EFiRAP_longtime\n"
         << "  --instances N              Seeded graph instances (default: 5)\n"
-        << "  --repetitions N            Timed repetitions per instance (default: 1)\n"
-        << "  --warmups N                Untimed runs per instance (default: 0)\n"
+        << "  --repetitions N            Timed repetitions per instance (default: 3)\n"
+        << "  --warmups N                Untimed runs per instance (default: 1)\n"
+        << "  --threads N                OpenMP threads for every algorithm (default: "
+        << MAIN_TIME_THREADS << ")\n"
         << "  --seed N                   Base graph/request seed (default: 20260820)\n"
         << "  --epsilon X                ZFA2/WPFA epsilon (code default: "
         << MAIN_TIME_EPSILON << ")\n"
@@ -254,7 +279,8 @@ void print_usage(const char* executable) {
         << "  --show-algorithm-output    Do not suppress algorithm stdout/stderr\n"
         << "  --help                     Show this message\n\n"
         << "Outputs:\n"
-        << "  main_time_runtime_raw.csv, main_time_runtime_summary.csv, and\n"
+        << "  " RUNTIME_BENCHMARK_RAW_FILENAME ", "
+        << RUNTIME_BENCHMARK_SUMMARY_FILENAME << ", and\n"
         << "  Greedy_<sweep>_runtime.ans (compatible with ChartGenerator.py).\n";
 }
 
@@ -296,6 +322,9 @@ Config parse_arguments(int argc, char** argv) {
         } else if(option == "--warmups") {
             config.warmups = parse_nonnegative_integer(
                 require_value(index, option), option, true);
+        } else if(option == "--threads") {
+            config.threads = parse_nonnegative_integer(
+                require_value(index, option), option, false);
         } else if(option == "--seed") {
             string value = require_value(index, option);
             try {
@@ -614,10 +643,10 @@ vector<double> runtimes_for(
 
 void write_summary(const Config& config, const vector<Sample>& samples) {
     const string filename = join_path(
-        config.output_directory, "main_time_runtime_summary.csv");
+        config.output_directory, RUNTIME_BENCHMARK_SUMMARY_FILENAME);
     ofstream output(filename, ios::trunc);
     if(!output) throw runtime_error("cannot open summary output: " + filename);
-    output << "sweep,parameter_value,algorithm,epsilon,bucket_eps,samples,mean_seconds,"
+    output << "sweep,parameter_value,algorithm,epsilon,bucket_eps,threads,samples,mean_seconds,"
               "median_seconds,stddev_seconds,min_seconds,max_seconds\n";
     output << fixed << setprecision(9);
 
@@ -640,7 +669,7 @@ void write_summary(const Config& config, const vector<Sample>& samples) {
                 auto bounds = minmax_element(runtimes.begin(), runtimes.end());
                 output << sweep << ',' << value << ',' << algorithm << ','
                        << config.epsilon << ',' << config.bucket_eps << ','
-                       << runtimes.size() << ',' << mean << ','
+                       << config.threads << ',' << runtimes.size() << ',' << mean << ','
                        << median(runtimes) << ',' << standard_deviation << ','
                        << *bounds.first << ',' << *bounds.second << '\n';
             }
@@ -666,9 +695,7 @@ void write_chart_files(const Config& config, const vector<Sample>& samples) {
                         "missing runtime samples for " + sweep + "/" +
                         algorithm);
                 }
-                double mean = accumulate(
-                    runtimes.begin(), runtimes.end(), 0.0) / runtimes.size();
-                output << ' ' << mean;
+                output << ' ' << median(runtimes);
             }
             output << '\n';
         }
@@ -680,12 +707,27 @@ void write_chart_files(const Config& config, const vector<Sample>& samples) {
 int main(int argc, char** argv) {
     try {
         Config config = parse_arguments(argc, argv);
+        if(RUNTIME_BENCHMARK_REQUIRE_ALL_ALGORITHMS &&
+           config.algorithms != ALL_ALGORITHMS) {
+            throw invalid_argument(
+                "main_runtime requires all algorithms in the fixed ANS "
+                "column order; omit --algorithms");
+        }
+        omp_set_dynamic(0);
+        omp_set_num_threads(config.threads);
         vector<string> available_algorithms;
         for(const string& algorithm : config.algorithms) {
             if(algorithm_available(algorithm)) {
                 available_algorithms.push_back(algorithm);
             } else {
-                cerr << "[main_time] skipping " << algorithm
+                if(RUNTIME_BENCHMARK_REQUIRE_ALL_ALGORITHMS) {
+                    throw runtime_error(
+                        "algorithm " + algorithm +
+                        " is unavailable; rebuild main_runtime with Gurobi "
+                        "support before writing runtime ANS files");
+                }
+                cerr << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] skipping "
+                     << algorithm
                      << ": this binary was built without Gurobi support\n";
             }
         }
@@ -697,19 +739,21 @@ int main(int argc, char** argv) {
         // All workload preparation is deliberately outside timed regions.
         const vector<Workload> workloads = prepare_workloads(config);
         const string raw_filename = join_path(
-            config.output_directory, "main_time_runtime_raw.csv");
+            config.output_directory, RUNTIME_BENCHMARK_RAW_FILENAME);
         ofstream raw_output(raw_filename, ios::trunc);
         if(!raw_output) throw runtime_error("cannot open raw output: " + raw_filename);
         raw_output << "sweep,parameter_value,request_count,fidelity_threshold,"
                       "time_limit,instance,repetition,algorithm,epsilon,"
-                      "bucket_eps,run_seconds\n";
+                      "bucket_eps,threads,run_seconds\n";
         raw_output << fixed << setprecision(9);
 
-        cout << "[main_time] algorithm columns:";
+        cout << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] algorithm columns:";
         for(const string& algorithm : config.algorithms) cout << ' ' << algorithm;
         cout << '\n'
-             << "[main_time] ZFA2/WPFA epsilon=" << config.epsilon
-             << " bucket_eps=" << config.bucket_eps << '\n';
+             << '[' << RUNTIME_BENCHMARK_LOG_NAME
+             << "] ZFA2/WPFA epsilon=" << config.epsilon
+             << " bucket_eps=" << config.bucket_eps
+             << " threads=" << config.threads << '\n';
 
         vector<Sample> samples;
         for(const string& sweep : config.sweeps) {
@@ -750,9 +794,11 @@ int main(int argc, char** argv) {
                                        << sample.algorithm << ','
                                        << config.epsilon << ','
                                        << config.bucket_eps << ','
+                                       << config.threads << ','
                                        << sample.seconds << '\n';
                             raw_output.flush();
-                            cout << "[main_time] " << sweep << '=' << value
+                            cout << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] "
+                                 << sweep << '=' << value
                                  << " instance=" << instance
                                  << " repetition=" << repetition
                                  << " algorithm=" << algorithm
@@ -767,20 +813,22 @@ int main(int argc, char** argv) {
         raw_output.close();
         write_summary(config, samples);
         write_chart_files(config, samples);
-        cout << "[main_time] raw samples: " << raw_filename << '\n'
-             << "[main_time] summary: "
+        cout << '[' << RUNTIME_BENCHMARK_LOG_NAME
+             << "] raw samples: " << raw_filename << '\n'
+             << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] summary: "
              << join_path(config.output_directory,
-                          "main_time_runtime_summary.csv")
+                          RUNTIME_BENCHMARK_SUMMARY_FILENAME)
              << '\n';
         for(const string& sweep : config.sweeps) {
-            cout << "[main_time] chart data: "
+            cout << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] chart data: "
                  << join_path(config.output_directory,
                               "Greedy_" + sweep + "_runtime.ans")
                  << '\n';
         }
         return 0;
     } catch(const exception& error) {
-        cerr << "[main_time] error: " << error.what() << '\n';
+        cerr << '[' << RUNTIME_BENCHMARK_LOG_NAME
+             << "] error: " << error.what() << '\n';
         return 1;
     }
 }

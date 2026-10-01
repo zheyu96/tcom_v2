@@ -33,6 +33,13 @@ algorithm_main_time = Algorithm/WernerAlgo/WernerAlgo.o \
                       Algorithm/MyAlgo3/MyAlgo3.o \
                       Algorithm/EFiRAP/EFiRAP.o \
                       Algorithm/EFiRAP_longtime/EFiRAP_longtime.o
+algorithm_main_runtime = Algorithm/WernerAlgo/WernerAlgo.o \
+                         Algorithm/WernerAlgo2/WernerAlgo2.o \
+                         Algorithm/WernerAlgo3/WernerAlgo3.o \
+                         Algorithm/MyAlgo1/MyAlgo1.o \
+                         Algorithm/MyAlgo3/MyAlgo3.o \
+                         Algorithm/EFiRAP/EFiRAP.gurobi.o \
+                         Algorithm/EFiRAP_longtime/EFiRAP_longtime.gurobi.o
 algorithm_main_small_scale = Algorithm/WernerAlgo/WernerAlgo.o \
                              Algorithm/WernerAlgo2/WernerAlgo2.o \
                              Algorithm/MyAlgo1/MyAlgo1.o \
@@ -110,6 +117,18 @@ runtime_compare: runtime_compare.cpp $(workload) $(dependency) $(algorithm_runti
 main_time: main_time.cpp $(workload) $(dependency) $(algorithm_main_time) $(routing_runtime_compare)
 	g++ -fopenmp $(gcc_flag) main_time.cpp $(workload) $(dependency) $(algorithm_main_time) $(routing_runtime_compare) $(gurobi_flag) -o main_time
 
+# Publication runtime benchmark.  It writes the three Greedy_*_runtime.ans
+# files only after all requested algorithms finish.  Dedicated EFiRAP objects
+# prevent a previous non-Gurobi build from being reused accidentally.
+ifeq ($(strip $(gurobi_flag)),)
+main_runtime:
+	@echo "main_runtime requires Gurobi. Set gurobi_path and, if needed, gurobi_lib."
+	@false
+else
+main_runtime: main_runtime.cpp main_time.cpp $(workload) $(dependency) $(algorithm_main_runtime) $(routing_runtime_compare)
+	g++ -fopenmp $(gcc_flag) main_runtime.cpp $(workload) $(dependency) $(algorithm_main_runtime) $(routing_runtime_compare) $(gurobi_flag) -o main_runtime
+endif
+
 # Reviewer-requested 3/4-node experiment with an exhaustive exact oracle.
 main_small_scale: main_small_scale.cpp $(dependency) $(algorithm_main_small_scale)
 	g++ -fopenmp $(gcc_flag) main_small_scale.cpp $(dependency) $(algorithm_main_small_scale) -o main_small_scale
@@ -181,6 +200,10 @@ Algorithm/EFiRAP/EFiRAP.o: Algorithm/EFiRAP/EFiRAP.cpp Algorithm/EFiRAP/EFiRAP.h
 	g++ -c $(gcc_flag) $(efirap_gurobi_define) $(gurobi_flag) Algorithm/EFiRAP/EFiRAP.cpp -o Algorithm/EFiRAP/EFiRAP.o
 Algorithm/EFiRAP_longtime/EFiRAP_longtime.o: Algorithm/EFiRAP_longtime/EFiRAP_longtime.cpp Algorithm/EFiRAP_longtime/EFiRAP_longtime.h Network/Purification/Purification.h config.h $(core_headers)
 	g++ -c $(gcc_flag) $(efirap_gurobi_define) $(gurobi_flag) Algorithm/EFiRAP_longtime/EFiRAP_longtime.cpp -o Algorithm/EFiRAP_longtime/EFiRAP_longtime.o
+Algorithm/EFiRAP/EFiRAP.gurobi.o: Algorithm/EFiRAP/EFiRAP.cpp Algorithm/EFiRAP/EFiRAP.h Network/Purification/Purification.h config.h $(core_headers)
+	g++ -c $(gcc_flag) -DEFIRAP_USE_GUROBI $(gurobi_flag) Algorithm/EFiRAP/EFiRAP.cpp -o Algorithm/EFiRAP/EFiRAP.gurobi.o
+Algorithm/EFiRAP_longtime/EFiRAP_longtime.gurobi.o: Algorithm/EFiRAP_longtime/EFiRAP_longtime.cpp Algorithm/EFiRAP_longtime/EFiRAP_longtime.h Network/Purification/Purification.h config.h $(core_headers)
+	g++ -c $(gcc_flag) -DEFIRAP_USE_GUROBI $(gurobi_flag) Algorithm/EFiRAP_longtime/EFiRAP_longtime.cpp -o Algorithm/EFiRAP_longtime/EFiRAP_longtime.gurobi.o
 
 # 時間量測版本演算法編譯規則
 Algorithm/WernerAlgo_time/WernerAlgo_time.o: Algorithm/WernerAlgo_time/WernerAlgo_time.cpp Algorithm/WernerAlgo_time/WernerAlgo_time.h config.h $(core_headers)
@@ -208,11 +231,11 @@ ExperimentWorkload.o: ExperimentWorkload.cpp ExperimentWorkload.h Network/Graph/
 
 # --- 清除工具 ---
 clean:
-	rm -f a.out zfa_run zfa2_run runtime runtime_compare runtime_compare.exe main_time main_time.exe main_small_scale main_small_scale.exe main_smallscale main_smallscale.exe
+	rm -f a.out zfa_run zfa2_run runtime runtime_compare runtime_compare.exe main_time main_time.exe main_runtime main_runtime.exe main_small_scale main_small_scale.exe main_smallscale main_smallscale.exe
 	find . -type f -name '*.o' -delete
 	find . -type f -name '*.h.gch' -delete
 	rm -f ../data/ans/*.ans
 	rm -f ../data/log/*
 	rm -f ../data/input/*
 
-.PHONY: clean all zfa_run zfa2_run runtime runtime_compare main_time main_small_scale main_smallscale plot_small_scale
+.PHONY: clean all zfa_run zfa2_run runtime runtime_compare main_time main_runtime main_small_scale main_smallscale plot_small_scale
