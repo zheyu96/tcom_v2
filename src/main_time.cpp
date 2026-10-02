@@ -65,7 +65,7 @@ namespace {
 
 // ==================== Runtime experiment controls ====================
 // Rebuild the runtime driver after changing WPFA precision or thread count.
-constexpr double MAIN_TIME_EPSILON = 0.35;
+constexpr double MAIN_TIME_EPSILON = 0.9;
 constexpr double MAIN_TIME_BUCKET_EPS = 0.0001;
 constexpr int MAIN_TIME_THREADS = 1;
 // =====================================================================

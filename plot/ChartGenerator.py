@@ -4,6 +4,7 @@
 import os
 import math
 import sys
+import csv
 import numpy as np
 
 import matplotlib
@@ -113,9 +114,9 @@ class ChartGenerator:
 
     _FONT_SIZE_BASE = 30
 
-    _RIGHT_TOP  = (0.6, 0.85)
+    _RIGHT_TOP  = (0.55, 0.83)
     _LEFT_TOP   = (0.45, 0.83)
-    _RIGHT_DOWN = (0.60, 0.13)
+    _RIGHT_DOWN = (0.55, 0.13)
     _LEFT_DOWN  = (0.40, 0.13)
 
     _BBOX_POS = {
@@ -208,15 +209,15 @@ class ChartGenerator:
             'request_cnt': (40,165,5,8),
             'tao': (0,130,5,6), 'time_limit': (50,110,5,5),
             'avg_memory': (30,120,5,6), 'mem_vary': (40,120,5,4),
-            'topo_vary': (0,120,5,4), 'mem_distribution': (0,150,5,4),
-            'path_set': (0,120,5,4),
+            'topo_vary': (0,150,5,10), 'mem_distribution': (0,150,5,4),
+            'path_set': (0,125,5,5),
             'min_fidelity': "auto", 'fidelity_threshold': (0,140,5,4),
             'swap_prob': (50,100,5,5), 'hop_count': "auto",
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'runtime':{
-            'request_cnt': (0,10,5,1), 'tao': "auto", 'time_limit': "auto",
+            'request_cnt': (0,3,1,1), 'tao': "auto", 'time_limit': (0,3,1,1),
             'avg_memory': "auto", 'mem_vary': "auto", 'topo_vary': "auto",
             'mem_distribution': "auto", 'path_set': "auto",
             'min_fidelity': "auto", 'fidelity_threshold': "auto",
@@ -297,6 +298,13 @@ class ChartGenerator:
         "UB", "WPFA-noPurify", "WPFA", "FNPR", "FLTO", "EFiRAP",
         "EFiRAP-long",
     ]
+    _RAW_ALGO_ORDER = [
+        "ZFA_UB", "ZFA", "ZFA2", "MyAlgo1", "MyAlgo3", "EFiRAP",
+        "EFiRAP_longtime",
+    ]
+    _RUNTIME_RAW_SWEEPS = {
+        "request_cnt", "time_limit", "fidelity_threshold",
+    }
 
     # 保持資料欄位順序，EFiRAP-long 是 main.cpp 輸出的最後一個演算法。
     _DRAW_ORDER = [0, 1, 2, 3, 4, 5, 6]
@@ -304,14 +312,36 @@ class ChartGenerator:
     # 保持原本各欄位使用的 marker 與顏色。
     _MARKERS = ['s', '*', 's', 'v', 'o', '^', 'x', '1', 'D']
     _COLORS = ["#800080", "#FF0000", "#0000FF", "#01C501", "#800080", "#FF00FF", "#00FFFF", "#808080", "#555555"]
+    # Softer colors for categorical bar charts.  Keep the black outlines and
+    # hatches below so adjacent algorithms remain easy to distinguish in
+    # grayscale printouts as well.
+    _PASTEL_BAR_COLORS = [
+        "#CDB4DB",  # UB: soft lavender
+        "#FFADAD",  # WPFA-noPurify: soft red
+        "#A0C4FF",  # WPFA: soft blue
+        "#CAFFBF",  # FNPR: soft green
+        "#BDB2FF",  # FLTO: lavender blue
+        "#FFC6FF",  # EFiRAP: soft pink
+        "#9BF6FF",  # EFiRAP-long: soft cyan
+    ]
     _HATCHES = ['', '//', '\\\\', 'xx', '..', '++', 'oo', '--', '**']
 
     _SKIP_ALGOS = ["Nesting", "Linear", "ASAP"]
 
     def __init__(self, dataName: str, x_key: str, y_key: str, label_every: int|None = None):
         path = os.path.join('..', 'data', 'ans', dataName)
+        runtime_raw_path = os.path.join(
+            '..', 'data', 'ans', 'main_runtime_raw.csv'
+        )
         is_small_scale = os.path.basename(dataName).startswith("SmallScale_")
-        if not os.path.exists(path):
+        use_runtime_raw = (
+            not is_small_scale
+            and os.path.basename(dataName).startswith("Greedy_")
+            and y_key == "runtime"
+            and x_key in self._RUNTIME_RAW_SWEEPS
+            and os.path.exists(runtime_raw_path)
+        )
+        if not use_runtime_raw and not os.path.exists(path):
             print(f"[WARN] file doesn't exist: {os.path.abspath(path)}")
             return
 
@@ -339,51 +369,66 @@ class ChartGenerator:
                 -index for index in range(len(self._ALGO_NAMES))
             ]
 
-        with open(path, 'r', encoding='utf-8') as f:
-            raw_lines = f.readlines()
-        print("start generate", path)
-
-        x_vals, y_vals = [], []
-        num_rows, num_cols = 0, None
-        for line in raw_lines:
-            line = line.strip()
-            if not line:
-                continue
-            parts = [p for p in line.split() if p != ""]
-            if len(parts) < 2:
-                continue
-            if num_cols is None:
-                num_cols = len(parts)
-            if len(parts) != num_cols:
-                continue
-
-            num_rows += 1
-            x_vals.append(parts[0])
-            good = True
-            for i in range(1, len(parts)):
-                try:
-                    y_vals.append(float(parts[i]))
-                except ValueError:
-                    good = False
-                    break
-            if not good:
-                num_rows -= 1
-                x_vals.pop()
-                y_vals = y_vals[:(len(y_vals) - (len(parts)-1))]
-
-        if num_rows == 0 or num_cols is None or num_cols < 2:
-            print("[WARN] no valid data rows.")
-            return
-
-        num_algos = num_cols - 1
-        if num_algos > len(self._ALGO_NAMES):
+        if use_runtime_raw:
+            try:
+                x_vals, y = self._load_runtime_raw_csv(
+                    runtime_raw_path, x_key
+                )
+            except (OSError, ValueError) as error:
+                print(f"[WARN] cannot load runtime raw CSV: {error}")
+                return
+            num_rows = len(x_vals)
+            num_algos = len(y)
             print(
-                f"[WARN] data has {num_algos} algorithm columns, but only "
-                f"{len(self._ALGO_NAMES)} names are configured."
+                "start generate", runtime_raw_path,
+                f"(median aggregation for {x_key})",
             )
-            return
+        else:
+            with open(path, 'r', encoding='utf-8') as f:
+                raw_lines = f.readlines()
+            print("start generate", path)
 
-        y = np.array(y_vals).reshape(num_rows, num_algos).T.tolist()
+            x_vals, y_vals = [], []
+            num_rows, num_cols = 0, None
+            for line in raw_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = [p for p in line.split() if p != ""]
+                if len(parts) < 2:
+                    continue
+                if num_cols is None:
+                    num_cols = len(parts)
+                if len(parts) != num_cols:
+                    continue
+
+                num_rows += 1
+                x_vals.append(parts[0])
+                good = True
+                for i in range(1, len(parts)):
+                    try:
+                        y_vals.append(float(parts[i]))
+                    except ValueError:
+                        good = False
+                        break
+                if not good:
+                    num_rows -= 1
+                    x_vals.pop()
+                    y_vals = y_vals[:(len(y_vals) - (len(parts)-1))]
+
+            if num_rows == 0 or num_cols is None or num_cols < 2:
+                print("[WARN] no valid data rows.")
+                return
+
+            num_algos = num_cols - 1
+            if num_algos > len(self._ALGO_NAMES):
+                print(
+                    f"[WARN] data has {num_algos} algorithm columns, but only "
+                    f"{len(self._ALGO_NAMES)} names are configured."
+                )
+                return
+
+            y = np.array(y_vals).reshape(num_rows, num_algos).T.tolist()
 
         def should_draw_algorithm(i: int) -> bool:
             name = self._ALGO_NAMES[i]
@@ -523,7 +568,8 @@ class ChartGenerator:
                 ax1.bar(
                     x_positions + offset, y[i],
                     width=bar_width * 0.9,
-                    color=self._COLORS[i], edgecolor="black", linewidth=0.8,
+                    color=self._PASTEL_BAR_COLORS[i],
+                    edgecolor="black", linewidth=0.8,
                     hatch=self._HATCHES[i], zorder=2,
                 )
                 categorical_bar_index += 1
@@ -682,6 +728,75 @@ class ChartGenerator:
         plt.savefig(os.path.join(pdf_dir, f'NWFA_{out_stem}.eps'), bbox_inches="tight", pad_inches=0.3)
         plt.savefig(os.path.join(pdf_dir, f'{out_stem}.png'),      bbox_inches="tight", pad_inches=0.3)
         plt.close()
+
+    @classmethod
+    def _load_runtime_raw_csv(cls, path: str, sweep: str):
+        required_columns = {
+            "sweep", "parameter_value", "algorithm", "run_seconds",
+        }
+        samples = {}
+
+        with open(path, 'r', encoding='utf-8', newline='') as csv_file:
+            reader = csv.DictReader(csv_file)
+            fieldnames = set(reader.fieldnames or [])
+            missing_columns = required_columns - fieldnames
+            if missing_columns:
+                missing = ", ".join(sorted(missing_columns))
+                raise ValueError(f"missing columns in {path}: {missing}")
+
+            for line_number, row in enumerate(reader, start=2):
+                if row["sweep"] != sweep:
+                    continue
+                algorithm = row["algorithm"]
+                if algorithm not in cls._RAW_ALGO_ORDER:
+                    continue
+                try:
+                    parameter_value = float(row["parameter_value"])
+                    runtime_seconds = float(row["run_seconds"])
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"invalid numeric value at CSV line {line_number}"
+                    ) from error
+                if not math.isfinite(parameter_value):
+                    raise ValueError(
+                        f"non-finite parameter value at CSV line {line_number}"
+                    )
+                if not math.isfinite(runtime_seconds) or runtime_seconds < 0:
+                    raise ValueError(
+                        f"invalid runtime at CSV line {line_number}"
+                    )
+                samples.setdefault(
+                    (parameter_value, algorithm), []
+                ).append(runtime_seconds)
+
+        parameter_values = sorted({value for value, _ in samples})
+        if not parameter_values:
+            raise ValueError(f"no rows found for sweep {sweep!r} in {path}")
+
+        missing_cells = [
+            (value, algorithm)
+            for value in parameter_values
+            for algorithm in cls._RAW_ALGO_ORDER
+            if not samples.get((value, algorithm))
+        ]
+        if missing_cells:
+            preview = ", ".join(
+                f"{value:g}/{algorithm}"
+                for value, algorithm in missing_cells[:5]
+            )
+            if len(missing_cells) > 5:
+                preview += ", ..."
+            raise ValueError(f"incomplete runtime samples: {preview}")
+
+        x_vals = [f"{value:g}" for value in parameter_values]
+        y = [
+            [
+                float(np.median(samples[(value, algorithm)]))
+                for value in parameter_values
+            ]
+            for algorithm in cls._RAW_ALGO_ORDER
+        ]
+        return x_vals, y
 
     @staticmethod
     def _gen_power_suffix(pow10: int, unit: str) -> str:

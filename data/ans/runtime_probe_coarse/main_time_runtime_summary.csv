@@ -1,0 +1,2 @@
+sweep,parameter_value,algorithm,epsilon,bucket_eps,threads,samples,mean_seconds,median_seconds,stddev_seconds,min_seconds,max_seconds
+fidelity_threshold,0.700000000,ZFA2,0.550000000,0.100000000,1,15,1.711181587,1.755921900,0.185321528,1.415437200,1.943443300
