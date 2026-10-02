@@ -5,17 +5,19 @@
 #include    "../../Network/Graph/Graph.h"
 #include    "../../config.h"
 
+#include <array>
+
 using namespace std;
 
 class MyAlgo3 : public AlgorithmBase {
-    vector<vector<vector<vector<double>>>> dp, dp2;
-    vector<vector<vector<vector<pair<int, int>>>>> par, par2;
-    vector<vector<vector<vector<bool>>>> caled, caled2;
+    vector<vector<vector<array<double, 4>>>> dp, dp2;
+    vector<vector<vector<array<pair<int, int>, 4>>>> par, par2;
+    vector<vector<vector<array<bool, 4>>>> caled, caled2;
     pair<Shape, double> calculate_best_shape(int src, int dst);
     pair<Shape, double> calculate_best_shape2(int src, int dst);
     double solve_fidelity(int left, int right, int t, int state, const vector<int> &path);
     double solve2(int left, int right, int t, int state, const vector<int> &path);
-    double cp_value(Shape shape);
+    double cp_value(Shape& shape);
     Shape_vector backtracing_shape(int left, int right, int t, int state, const vector<int> &path);
     Shape_vector backtracing_shape2(int left, int right, int t, int state, const vector<int> &path);
 public:

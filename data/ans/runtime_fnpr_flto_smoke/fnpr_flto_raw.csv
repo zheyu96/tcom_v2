@@ -1,0 +1,3 @@
+sweep,parameter_value,instance,repetition,algorithm,epsilon,threads,original_seconds,optimized_seconds,fidelity_gain,succ_request_cnt,actual_req_cnt,metrics_identical
+request_cnt,100,0,0,MyAlgo1,0.90000000000000002,1,0.365921,0.022764599999999999,37.92419779732333,48.957414983572484,56,1
+request_cnt,100,0,0,MyAlgo3,0.90000000000000002,1,0.50634140000000005,0.031962900000000002,40.403580688891424,52.175352543926664,60,1

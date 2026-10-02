@@ -1,20 +1,23 @@
-#include "MyAlgo3.h"
+#include "BaselineMyAlgo3.h"
 
-MyAlgo3::MyAlgo3(const Graph& graph, const vector<pair<int, int>>& requests, const map<SDpair, vector<Path>>& paths):
+BaselineMyAlgo3::BaselineMyAlgo3(const Graph& graph, const vector<pair<int, int>>& requests, const map<SDpair, vector<Path>>& paths):
     AlgorithmBase(graph, requests, paths) {
-    algorithm_name = "MyAlgo3";
+    algorithm_name = "BaselineMyAlgo3";
 }
 
-pair<Shape, double> MyAlgo3::calculate_best_shape(int src, int dst) {
+pair<Shape, double> BaselineMyAlgo3::calculate_best_shape(int src, int dst) {
     // cerr << "cal " << src << " " << dst << endl;
-    const vector<Path>& paths = get_paths(src, dst);
+    vector<Path> paths = get_paths(src, dst);
     
     Shape best_shape;
     double best_fidelity = -1;
     for(const Path& path : paths) {
         double path_prob = graph.path_Pr(path);
+        dp.clear();
         dp.resize(path.size());
+        caled.clear();
         caled.resize(path.size());
+        par.clear();
         par.resize(path.size());
         for(int i = 0; i < (int)path.size(); i++) {
             dp[i].resize(path.size());
@@ -25,9 +28,9 @@ pair<Shape, double> MyAlgo3::calculate_best_shape(int src, int dst) {
                 par[i][j].resize(time_limit);
                 caled[i][j].resize(time_limit);
                 for(int t = 0; t < time_limit; t++) {
-                    dp[i][j][t].fill(0);
-                    par[i][j][t].fill({-2, -2});
-                    caled[i][j][t].fill(false);
+                    dp[i][j][t].resize(4, 0);
+                    par[i][j][t].resize(4, {-2, -2});
+                    caled[i][j][t].resize(4, false);
                 }
             }
         }
@@ -61,15 +64,18 @@ pair<Shape, double> MyAlgo3::calculate_best_shape(int src, int dst) {
     return {best_shape, best_fidelity};
 }
 
-pair<Shape, double> MyAlgo3::calculate_best_shape2(int src, int dst) {
+pair<Shape, double> BaselineMyAlgo3::calculate_best_shape2(int src, int dst) {
     // cerr << "cal " << src << " " << dst << endl;
-    const vector<Path>& paths = get_paths(src, dst);
+    vector<Path> paths = get_paths(src, dst);
 
     Shape best_shape;
     double best_value = INF;
     for(const Path& path : paths) {
+        dp2.clear();
         dp2.resize(path.size());
+        caled2.clear();
         caled2.resize(path.size());
+        par2.clear();
         par2.resize(path.size());
         for(int i = 0; i < (int)path.size(); i++) {
             dp2[i].resize(path.size());
@@ -80,9 +86,9 @@ pair<Shape, double> MyAlgo3::calculate_best_shape2(int src, int dst) {
                 par2[i][j].resize(time_limit);
                 caled2[i][j].resize(time_limit);
                 for(int t = 0; t < time_limit; t++) {
-                    dp2[i][j][t].fill(0);
-                    par2[i][j][t].fill({-2, -2});
-                    caled2[i][j][t].fill(false);
+                    dp2[i][j][t].resize(4, 0);
+                    par2[i][j][t].resize(4, {-2, -2});
+                    caled2[i][j][t].resize(4, false);
                 }
             }
         }
@@ -113,7 +119,7 @@ pair<Shape, double> MyAlgo3::calculate_best_shape2(int src, int dst) {
 // state = 1, left limit
 // state = 2, right limit
 // state = 3, left and right limit
-double MyAlgo3::solve_fidelity(int left, int right, int t, int state, const vector<int> &path) {
+double BaselineMyAlgo3::solve_fidelity(int left, int right, int t, int state, const vector<int> &path) {
     int left_id = path[left], right_id = path[right];
     int left_remain = graph.get_node_memory_at(left_id, t);
     int right_remain = graph.get_node_memory_at(right_id, t);
@@ -158,7 +164,7 @@ double MyAlgo3::solve_fidelity(int left, int right, int t, int state, const vect
     return dp[left][right][t][state] = best;
 }
 
-double MyAlgo3::solve2(int left, int right, int t, int state, const vector<int> &path) {
+double BaselineMyAlgo3::solve2(int left, int right, int t, int state, const vector<int> &path) {
     int left_id = path[left], right_id = path[right];
     int left_remain = graph.get_node_memory_at(left_id, t);
     int right_remain = graph.get_node_memory_at(right_id, t);
@@ -207,7 +213,7 @@ double MyAlgo3::solve2(int left, int right, int t, int state, const vector<int> 
     return dp2[left][right][t][state] = best;
 }
 
-Shape_vector MyAlgo3::backtracing_shape(int left, int right, int t, int state, const vector<int> &path) {
+Shape_vector BaselineMyAlgo3::backtracing_shape(int left, int right, int t, int state, const vector<int> &path) {
     int k = par[left][right][t][state].first;
     int s = par[left][right][t][state].second;
     int left_id = path[left], right_id = path[right];
@@ -267,7 +273,7 @@ Shape_vector MyAlgo3::backtracing_shape(int left, int right, int t, int state, c
     return result;
 }
 
-Shape_vector MyAlgo3::backtracing_shape2(int left, int right, int t, int state, const vector<int> &path) {
+Shape_vector BaselineMyAlgo3::backtracing_shape2(int left, int right, int t, int state, const vector<int> &path) {
     int k = par2[left][right][t][state].first;
     int s = par2[left][right][t][state].second;
     int left_id = path[left], right_id = path[right];
@@ -327,8 +333,8 @@ Shape_vector MyAlgo3::backtracing_shape2(int left, int right, int t, int state, 
     return result;
 }
 
-double MyAlgo3::cp_value(Shape& shape) {
-    const Shape_vector& nm = shape.get_node_mem_range();
+double BaselineMyAlgo3::cp_value(Shape shape) {
+    Shape_vector nm = shape.get_node_mem_range();
     if(nm.empty()) return -INF;
     double sum = 0;
     for(int i = 0; i < (int)nm.size(); i++) {
@@ -351,24 +357,8 @@ double MyAlgo3::cp_value(Shape& shape) {
     return pow(shape.get_fidelity(A, B, n, T, tao, graph.get_F_init()), 10) * graph.path_Pr(shape) / pow(sum, 0.33);
 }
 
-void MyAlgo3::run() {
-    struct PairEvaluation {
-        vector<int> nodes;
-        Shape shape1, shape2;
-        double cp1 = 0, cp2 = 0;
-        bool valid = false;
-    };
-    map<SDpair, PairEvaluation> cache;
-    for(const SDpair& request : requests) {
-        auto inserted = cache.emplace(request, PairEvaluation{});
-        if(!inserted.second) continue;
-        set<int> nodes;
-        // Include all candidate paths, not just the last winning schedule.
-        for(const Path& path : get_paths(request.first, request.second))
-            nodes.insert(path.begin(), path.end());
-        inserted.first->second.nodes.assign(nodes.begin(), nodes.end());
-    }
-    vector<unsigned char> changed_nodes(graph.get_num_nodes(), 0);
+void BaselineMyAlgo3::run() {
+
     while(!requests.empty()) {
         double best_cp = EPS;
         int best_request = -1;
@@ -376,18 +366,10 @@ void MyAlgo3::run() {
         for(int i = 0; i < (int)requests.size(); i++) {
             int src = requests[i].first;
             int dst = requests[i].second;
-            auto& evaluation = cache.at(requests[i]);
-            if(!evaluation.valid) {
-                evaluation.shape1 = calculate_best_shape(src, dst).first;
-                evaluation.shape2 = calculate_best_shape2(src, dst).first;
-                evaluation.cp1 = cp_value(evaluation.shape1) * graph.get_num_nodes();
-                evaluation.cp2 = cp_value(evaluation.shape2);
-                evaluation.valid = true;
-            }
-            const Shape& shape1 = evaluation.shape1;
-            const Shape& shape2 = evaluation.shape2;
-            const double cp1 = evaluation.cp1;
-            const double cp2 = evaluation.cp2;
+            Shape shape1 = calculate_best_shape(src, dst).first;
+            Shape shape2 = calculate_best_shape2(src, dst).first;
+            double cp1 = cp_value(shape1) * graph.get_num_nodes();
+            double cp2 = cp_value(shape2);
             if(cp1 > best_cp) {
                 best_request = i;
                 best_shape = shape1;
@@ -404,17 +386,6 @@ void MyAlgo3::run() {
         
         requests.erase(requests.begin() + best_request);
         graph.reserve_shape(best_shape);
-        fill(changed_nodes.begin(), changed_nodes.end(), 0);
-        for(const auto& node : best_shape.get_node_mem_range())
-            changed_nodes[node.first] = 1;
-        for(auto& entry : cache) {
-            for(int node : entry.second.nodes) {
-                if(changed_nodes[node]) {
-                    entry.second.valid = false;
-                    break;
-                }
-            }
-        }
     }
 
     update_res();

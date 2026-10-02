@@ -1,12 +1,12 @@
-#include "MyAlgo1.h"
+#include "BaselineMyAlgo1.h"
 
-MyAlgo1::MyAlgo1(const Graph& graph, const vector<pair<int, int>>& requests, const map<SDpair, vector<Path>>& paths):
+BaselineMyAlgo1::BaselineMyAlgo1(const Graph& graph, const vector<pair<int, int>>& requests, const map<SDpair, vector<Path>>& paths):
     AlgorithmBase(graph, requests, paths) {
-    algorithm_name = "MyAlgo1";
+    algorithm_name = "BaselineMyAlgo1";
 
 }
 
-void MyAlgo1::variable_initialize() {
+void BaselineMyAlgo1::variable_initialize() {
     // m = i + vt
     // x(i, m) = 0
     // delta = (1 + eps)((1 + eps)m)^(-1/eps)
@@ -16,23 +16,13 @@ void MyAlgo1::variable_initialize() {
     double m = requests.size() + (double)graph.get_num_nodes() * (double)graph.get_time_limit();
     double delta = (1 + epsilon) * (1.0 / pow((1 + epsilon) * m, 1.0 / epsilon));
     obj = m * delta;
-    // cerr << "[MyAlgo1] delta = " << delta << endl;
+    // cerr << "[BaselineMyAlgo1] delta = " << delta << endl;
     x.clear();
     alpha.clear();
     beta.clear();
     x.resize(requests.size());
     alpha.resize(requests.size(), delta);
     beta.resize(graph.get_num_nodes(), vector<double>(graph.get_time_limit()));
-    oracle_cache.clear();
-    dirty_nodes.assign(graph.get_num_nodes(), 0);
-    for(const SDpair& request : requests) {
-        auto inserted = oracle_cache.emplace(request, OracleCache{});
-        if(!inserted.second) continue;
-        set<int> nodes;
-        for(const Path& path : get_paths(request.first, request.second))
-            nodes.insert(path.begin(), path.end());
-        inserted.first->second.nodes.assign(nodes.begin(), nodes.end());
-    }
 
     for(int i = 0; i < graph.get_num_nodes(); i++) {
         for(int t = 0; t < graph.get_time_limit(); t++) {
@@ -41,48 +31,34 @@ void MyAlgo1::variable_initialize() {
         }
     }
 }
-Shape_vector MyAlgo1::separation_oracle() {
-    // Every path for a pair depends only on its endpoint/path-node betas.
-    // Alpha is part of the cache key; never reuse a score at another alpha.
-    for(auto& entry : oracle_cache) {
-        for(int node : entry.second.nodes) {
-            if(dirty_nodes[node]) {
-                entry.second.evaluations.clear();
-                break;
-            }
-        }
-    }
-    fill(dirty_nodes.begin(), dirty_nodes.end(), 0);
+Shape_vector BaselineMyAlgo1::separation_oracle() {
     Shape_vector min_shape;
     double min_value = INF;
     for(int i = 0; i < (int)requests.size(); i++) {
         int src = requests[i].first, dst = requests[i].second;
-        // cerr << "[MyAlgo1] " << "path len = " << graph.get_path(src, dst).size() << endl;
-        auto& evaluations = oracle_cache.at(requests[i]).evaluations;
-        auto found = evaluations.find(alpha[i]);
-        if(found == evaluations.end()) {
-            found = evaluations.emplace(
-                alpha[i], find_min_shape(src, dst, alpha[i])).first;
-        }
-        const auto& result = found->second;
-        const Shape_vector& shape = result.first;
+        // cerr << "[BaselineMyAlgo1] " << "path len = " << graph.get_path(src, dst).size() << endl;
+        auto result = find_min_shape(src, dst, alpha[i]);
+        Shape_vector shape = result.first;
         double value = result.second;
         if(value < min_value) {
             min_shape = shape;
             min_value = value;
         }
-        // cerr << "[MyAlgo1] " << "find shape" << endl;
+        // cerr << "[BaselineMyAlgo1] " << "find shape" << endl;
     }
     return min_shape;
 }
-pair<Shape_vector, double> MyAlgo1::find_min_shape(int src, int dst, double alp) {
-    const vector<Path>& paths = get_paths(src, dst);
+pair<Shape_vector, double> BaselineMyAlgo1::find_min_shape(int src, int dst, double alp) {
+    vector<Path> paths = get_paths(src, dst);
     
     Shape_vector best_shape;
     double best_cost = INF;
     for(const Path& path : paths) {
+        dp.clear();
         dp.resize(path.size());
+        par.clear();
         par.resize(path.size());
+        caled.clear();
         caled.resize(path.size());
         for(int i = 0; i < (int)path.size(); i++) {
             dp[i].resize(path.size());
@@ -90,17 +66,16 @@ pair<Shape_vector, double> MyAlgo1::find_min_shape(int src, int dst, double alp)
             caled[i].resize(path.size());
             for(int j = 0; j < (int)path.size(); j++) {
                 dp[i][j].resize(time_limit);
-                par[i][j].assign(time_limit, -2);
-                caled[i][j].assign(time_limit, false);
+                par[i][j].resize(time_limit, -2);
+                caled[i][j].resize(time_limit, false);
             }
         }
 
         double best = INF;
         int best_time = -1;
-        const double path_probability = graph.path_Pr(path);
         for(int t = 0; t < time_limit; t++) {
             double result = recursion_calculate_min_shape(0, path.size() - 1, t, path);
-            result = (result + alp) / path_probability;
+            result = (result + alp) / graph.path_Pr(path);
             if(best > result) {
                 best = result;
                 best_time = t;
@@ -118,7 +93,7 @@ pair<Shape_vector, double> MyAlgo1::find_min_shape(int src, int dst, double alp)
     if(best_cost == INF) return {{}, INF};
     return {best_shape, best_cost};
 }
-double MyAlgo1::recursion_calculate_min_shape(int left, int right, int t, const vector<int> &path) {
+double BaselineMyAlgo1::recursion_calculate_min_shape(int left, int right, int t, const vector<int> &path) {
     if(t <= 0) return INF;
     // cerr << left << " " << right << " " << t << " " << (int)path.size() << endl;
 
@@ -148,7 +123,7 @@ double MyAlgo1::recursion_calculate_min_shape(int left, int right, int t, const 
     par[left][right][t] = best_k;
     return dp[left][right][t] = best + beta[left_id][t] + beta[right_id][t];
 }
-Shape_vector MyAlgo1::recursion_find_shape(int left, int right, int t, const vector<int> &path) {
+Shape_vector BaselineMyAlgo1::recursion_find_shape(int left, int right, int t, const vector<int> &path) {
     int left_id = path[left], right_id = path[right], k = par[left][right][t];
     if(left == right - 1 && k == -2) {
         Shape_vector result;
@@ -203,7 +178,7 @@ Shape_vector MyAlgo1::recursion_find_shape(int left, int right, int t, const vec
     return result;
 }
 
-void MyAlgo1::run() {
+void BaselineMyAlgo1::run() {
 
     // q = min (1, C(v) / theta(v, t)) for all v, t
 
@@ -266,7 +241,6 @@ void MyAlgo1::run() {
                 for(pair<int, int> P : need_amount) {
                     int t = P.first;
                     int node_id = shape[i].first;
-                    dirty_nodes[node_id] = 1;
                     double theta = P.second;
                     double original = beta[node_id][t];
                     if(graph.get_node_memory_at(node_id, t) == 0) {
@@ -278,31 +252,31 @@ void MyAlgo1::run() {
                 }
             }
 
-            // cerr << "[MyAlgo1] obj = " << obj << endl;
+            // cerr << "[BaselineMyAlgo1] obj = " << obj << endl;
         }
 
 
         vector<pair<double, Shape_vector>> shapes;
 
         for(int i = 0; i < (int)requests.size(); i++) {
-            for(const auto& P : x[i]) {
+            for(auto P : x[i]) {
                 shapes.push_back({P.second, P.first});
                 // shapes.push_back({Shape(P.first).get_fidelity(A, B, n, T, tao), P.first});
             }
         }
 
-        // sort(shapes.begin(), shapes.end(), [](const pair<double, Shape_vector>& left, const pair<double, Shape_vector>& right) {
+        // sort(shapes.begin(), shapes.end(), [](pair<double, Shape_vector> left, pair<double, Shape_vector> right) {
         //     if(fabs(left.first - right.first) >= EPS) return left.first > right.first;
         //     if(left.second.size() != right.second.size()) return left.second.size() < right.second.size();
         //     return left.second < right.second;
         // });
-        sort(shapes.begin(), shapes.end(), [](const pair<double, Shape_vector>& left, const pair<double, Shape_vector>& right) {
+        sort(shapes.begin(), shapes.end(), [](pair<double, Shape_vector> left, pair<double, Shape_vector> right) {
             return left.first > right.first;
         });
-        // cerr << "[MyAlgo1] " << shapes.size() << endl;
+        // cerr << "[BaselineMyAlgo1] " << shapes.size() << endl;
         vector<bool> used(requests.size(), false);
         vector<int> finished;
-        for(const auto& P : shapes) {
+        for(pair<double, Shape_vector> P : shapes) {
             Shape shape = Shape(P.second);
             int request_index = -1;
             for(int i = 0; i < (int)requests.size(); i++) {
@@ -314,7 +288,7 @@ void MyAlgo1::run() {
             if(request_index == -1 || used[request_index]) continue;
             if(graph.check_resource(shape)) {
                 used[request_index] = true;
-                // cerr << "[MyAlgo1] " << P.first << " " << P.second.size() << endl;
+                // cerr << "[BaselineMyAlgo1] " << P.first << " " << P.second.size() << endl;
                 graph.reserve_shape(shape);
                 finished.push_back(request_index);
             }

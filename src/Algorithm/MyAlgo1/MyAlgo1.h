@@ -15,6 +15,12 @@ class MyAlgo1 : public AlgorithmBase {
     vector<vector<vector<bool>>> caled;
     vector<vector<vector<int>>> par;
     double epsilon = EXPERIMENT_EPSILON, obj;
+    struct OracleCache {
+        vector<int> nodes;
+        map<double, pair<Shape_vector, double>> evaluations;
+    };
+    map<SDpair, OracleCache> oracle_cache;
+    vector<unsigned char> dirty_nodes;
     void variable_initialize();
     Shape_vector separation_oracle();
     pair<Shape_vector, double> find_min_shape(int src, int dst, double alp);
