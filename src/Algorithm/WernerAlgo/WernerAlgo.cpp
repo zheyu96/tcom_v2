@@ -1,6 +1,6 @@
 #include "WernerAlgo.h"
 
-WernerAlgo::WernerAlgo(const Graph& graph,const vector<pair<int,int>>& requests,const map<SDpair, vector<Path>>& paths): AlgorithmBase(graph, requests, paths)
+WernerAlgo::WernerAlgo(const Graph& graph,const vector<pair<int,int>>& requests,const map<SDpair, vector<Path>>& paths, double epsilon, double bucket_eps): AlgorithmBase(graph, requests, paths), epsilon(epsilon), bucket_eps_override(bucket_eps)
 {
     algorithm_name = "ZFA";
 }
@@ -18,7 +18,8 @@ void WernerAlgo::variable_initialize() {
     x.resize(requests.size());
     int V = graph.get_num_nodes();
     int T = graph.get_time_limit();
-    dpp.eps_bucket = graph.get_bucket_eps();
+    dpp.eps_bucket = bucket_eps_override > 0.0 ?
+        bucket_eps_override : graph.get_bucket_eps();
     double F_th=graph.get_fidelity_threshold();
     double w_th=(4.0*F_th-1.0)/3.0;
     dpp.Zhat = sqrt(-log(w_th))+1e-9;

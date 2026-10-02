@@ -29,6 +29,7 @@ public:
                const vector<pair<int,int>>& requests,
                const map<SDpair, vector<Path>>& paths);
 
+    void set_epsilon(double value) { epsilon = value; }
     void run();
 
 private:
@@ -53,7 +54,7 @@ private:
         double eps_bucket,invLogQ,Zhat,Zmin,eta,T,deltaP;
         int tau_max;
     }dpp;
-    double epsilon = 0.5;
+    double epsilon = EXPERIMENT_EPSILON;
     double obj = 0.0;
     vector<double> alpha;
     vector<vector<double>> beta;

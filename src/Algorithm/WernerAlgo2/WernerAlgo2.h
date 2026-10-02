@@ -31,7 +31,7 @@ public:
     WernerAlgo2(const Graph& graph,
                const vector<pair<int,int>>& requests,
                const map<SDpair, vector<Path>>& paths,
-               double epsilon = 0.55,
+               double epsilon = EXPERIMENT_EPSILON,
                // WPFA uses finer Z/P buckets than the shared graph default.
                // Runtime experiments can still override this explicitly.
                double bucket_eps = 0.001);
@@ -65,7 +65,7 @@ private:
         int tau_max;
     }dpp;
     // ===== 參數 / 對偶變數（風格比照 MyAlgo1） =====
-    double epsilon = 0.5;  // 原 0.35，加大加速收斂（近似比從 1.35 變 1.5）
+    double epsilon = EXPERIMENT_EPSILON;
     double bucket_eps = -1.0;
     bool detailed_logging = true;
     double obj = 0.0;

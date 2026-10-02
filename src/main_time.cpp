@@ -65,7 +65,7 @@ namespace {
 
 // ==================== Runtime experiment controls ====================
 // Rebuild the runtime driver after changing WPFA precision or thread count.
-constexpr double MAIN_TIME_EPSILON = 0.9;
+constexpr double MAIN_TIME_EPSILON = EXPERIMENT_EPSILON;
 constexpr double MAIN_TIME_BUCKET_EPS = 0.0001;
 constexpr int MAIN_TIME_THREADS = 1;
 // =====================================================================
@@ -92,9 +92,8 @@ struct Config {
     int warmups = 1;
     int threads = MAIN_TIME_THREADS;
     uint32_t seed = 20260820U;
-    // These two parameters belong to ZFA2/WPFA. Other algorithms retain
-    // their original parameter settings so the runtime comparison stays
-    // consistent with main.cpp.
+    // Use the same approximation controls for ZFA and ZFA2/WPFA.
+    // All algorithms with an approximation epsilon receive this value.
     double epsilon = MAIN_TIME_EPSILON;
     double bucket_eps = MAIN_TIME_BUCKET_EPS;
     bool regenerate_inputs = true;
@@ -268,9 +267,9 @@ void print_usage(const char* executable) {
         << "  --threads N                OpenMP threads for every algorithm (default: "
         << MAIN_TIME_THREADS << ")\n"
         << "  --seed N                   Base graph/request seed (default: 20260820)\n"
-        << "  --epsilon X                ZFA2/WPFA epsilon (code default: "
+        << "  --epsilon X                All approximation algorithms (code default: "
         << MAIN_TIME_EPSILON << ")\n"
-        << "  --bucket-eps X             ZFA2/WPFA bucket epsilon (code default: "
+        << "  --bucket-eps X             ZFA and ZFA2/WPFA bucket epsilon (code default: "
         << MAIN_TIME_BUCKET_EPS << ")\n"
         << "  --input-pattern PATH       {} is replaced by the instance index\n"
         << "  --output-dir PATH          Existing output directory (default: ../data/ans)\n"
@@ -340,8 +339,8 @@ Config parse_arguments(int argc, char** argv) {
         } else if(option == "--epsilon" || option == "--fixed-epsilon") {
             vector<double> parsed = parse_number_list(
                 require_value(index, option), option);
-            if(parsed.size() != 1 || parsed.front() <= 0.0) {
-                throw invalid_argument(option + " expects one positive number");
+            if(parsed.size() != 1 || parsed.front() <= 0.0 || parsed.front() >= 1.0) {
+                throw invalid_argument(option + " expects 0 < epsilon < 1");
             }
             config.epsilon = parsed.front();
         } else if(option == "--bucket-eps" ||
@@ -423,7 +422,7 @@ Graph load_graph(
         0.25, 0.75, 2.0, // decoherence A, B, n
         0.04, 0.002,     // decoherence T, tao
         0.02702867239,   // Zmin
-        0.01,            // graph bucket epsilon; ZFA2 supplies 0.0001
+        0.01,            // shared graph default; runtime ZFA/ZFA2 override it
         0.001,           // time eta
         0.01,            // delta P
         0.045,           // entangling lambda
@@ -539,10 +538,13 @@ unique_ptr<AlgorithmBase> make_algorithm(
     double epsilon,
     double bucket_eps) {
     if(name == "ZFA_UB") {
-        return unique_ptr<AlgorithmBase>(new WernerAlgo3(graph, requests, paths));
+        auto algorithm = make_unique<WernerAlgo3>(graph, requests, paths);
+        algorithm->set_epsilon(epsilon);
+        return algorithm;
     }
     if(name == "ZFA") {
-        return unique_ptr<AlgorithmBase>(new WernerAlgo(graph, requests, paths));
+        return unique_ptr<AlgorithmBase>(
+            new WernerAlgo(graph, requests, paths, epsilon, bucket_eps));
     }
     if(name == "ZFA2") {
         unique_ptr<WernerAlgo2> algorithm(
@@ -552,17 +554,19 @@ unique_ptr<AlgorithmBase> make_algorithm(
         return unique_ptr<AlgorithmBase>(algorithm.release());
     }
     if(name == "MyAlgo1") {
-        return unique_ptr<AlgorithmBase>(new MyAlgo1(graph, requests, paths));
+        auto algorithm = make_unique<MyAlgo1>(graph, requests, paths);
+        algorithm->set_epsilon(epsilon);
+        return algorithm;
     }
     if(name == "MyAlgo3") {
         return unique_ptr<AlgorithmBase>(new MyAlgo3(graph, requests, paths));
     }
     if(name == "EFiRAP") {
-        return unique_ptr<AlgorithmBase>(new EFiRAP(graph, requests, paths));
+        return unique_ptr<AlgorithmBase>(new EFiRAP(graph, requests, paths, epsilon));
     }
     if(name == "EFiRAP_longtime") {
         return unique_ptr<AlgorithmBase>(
-            new EFiRAP_longtime(graph, requests, paths));
+            new EFiRAP_longtime(graph, requests, paths, epsilon));
     }
     throw invalid_argument("unknown algorithm: " + name);
 }
@@ -751,7 +755,7 @@ int main(int argc, char** argv) {
         for(const string& algorithm : config.algorithms) cout << ' ' << algorithm;
         cout << '\n'
              << '[' << RUNTIME_BENCHMARK_LOG_NAME
-             << "] ZFA2/WPFA epsilon=" << config.epsilon
+             << "] ZFA and ZFA2/WPFA epsilon=" << config.epsilon
              << " bucket_eps=" << config.bucket_eps
              << " threads=" << config.threads << '\n';
 

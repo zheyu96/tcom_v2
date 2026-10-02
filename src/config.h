@@ -19,6 +19,9 @@
 
 // #define double long double
 
+// Shared approximation precision for all experiment drivers.
+inline constexpr double EXPERIMENT_EPSILON = 0.9;
+
 extern bool DEBUG;
 extern double EPS;
 extern double INF;

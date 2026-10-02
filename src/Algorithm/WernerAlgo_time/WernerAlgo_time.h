@@ -30,7 +30,7 @@ public:
     #define double long double
     WernerAlgo_time(const Graph& graph,
                const vector<pair<int,int>>& requests,
-               const map<SDpair, vector<Path>>& paths,double epsilon=0.35);
+               const map<SDpair, vector<Path>>& paths,double epsilon=EXPERIMENT_EPSILON);
 
     void run();
 
@@ -55,7 +55,7 @@ private:
         double eps_bucket,Zhat,Zmin,eta,T;
     }dpp;
     // ===== 參數 / 對偶變數（風格比照 MyAlgo1） =====
-    double epsilon = 0.35;
+    double epsilon = EXPERIMENT_EPSILON;
     double obj = 0.0;
     vector<double> alpha;                 // 每個 request 的 dual
     vector<vector<double>> beta;          // beta[v][t]：節點-時間 dual

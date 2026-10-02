@@ -9,7 +9,7 @@ MyAlgo2::MyAlgo2(const Graph& graph, const vector<pair<int, int>>& requests, con
     // alpha(i) = delta 
     // beta(v, t) = delta / C(v)
 
-    epsilon = (0.85);
+    epsilon = EXPERIMENT_EPSILON;
     double m = this->requests.size() + (double)this->graph.get_num_nodes() * (double)this->graph.get_time_limit();
     double delta = (1 + epsilon) * (1.0 / pow((1 + epsilon) * m, 1.0 / epsilon));
     obj = m * delta;

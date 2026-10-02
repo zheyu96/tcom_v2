@@ -57,7 +57,7 @@ private:
         int tau_max;
     }dpp;
     // ===== 參數 / 對偶變數（風格比照 MyAlgo1） =====
-    double epsilon = 0.35;
+    double epsilon = EXPERIMENT_EPSILON;
     double obj = 0.0;
     vector<double> alpha;                 // 每個 request 的 dual
     vector<vector<double>> beta;          // beta[v][t]：節點-時間 dual

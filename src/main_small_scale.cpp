@@ -12,9 +12,11 @@
 //   make main_small_scale
 //   ./main_small_scale
 
-// The three constants below are intentionally in source code so an experiment
-// configuration can be changed and archived with the executable.
-constexpr double SMALL_SCALE_EPSILON = 0.10;
+// Approximation epsilon is shared with every experiment through config.h.
+// The bucket width and purification limit remain specific to this experiment.
+#include "config.h"
+
+constexpr double SMALL_SCALE_EPSILON = EXPERIMENT_EPSILON;
 constexpr double SMALL_SCALE_BUCKET_EPS = 0.001;
 constexpr int SMALL_SCALE_MAX_PURIFICATION_ROUNDS = 3;
 

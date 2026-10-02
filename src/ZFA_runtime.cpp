@@ -90,7 +90,7 @@ int main() {
     default_setting["avg_memory"] = 6;
     default_setting["tao"] = 0.002;
     default_setting["fidelity_threshold"] = 0.7;
-    default_setting["epsilon"] = 0.35; 
+    default_setting["epsilon"] = EXPERIMENT_EPSILON;
     default_setting["Zmin"] = 0.02702867239;
     default_setting["bucket_eps"] = 0.01;
     default_setting["time_eta"] = 0.001;

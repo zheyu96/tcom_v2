@@ -52,7 +52,7 @@ struct Config {
     string python_command = "python3";
     vector<double> epsilon_values{0.1, 0.3, 0.5, 0.7, 0.9};
     vector<double> bucket_eps_values{0.00001, 0.0001, 0.001, 0.01, 0.1};
-    double fixed_epsilon = 0.5;
+    double fixed_epsilon = EXPERIMENT_EPSILON;
     double fixed_bucket_eps = 0.0001;
     bool parameter_sweep = false;
     bool time_limits_explicit = false;
@@ -85,7 +85,7 @@ struct RunSpec {
     string algorithm;
     string sweep_parameter = "fixed";
     double parameter_value = 0.0;
-    double epsilon = 0.5;
+    double epsilon = EXPERIMENT_EPSILON;
     double bucket_eps = 0.0001;
 };
 
@@ -183,7 +183,7 @@ void print_usage(const char* executable) {
         << "  --wpfa-parameter-sweep Sweep epsilon and bucket_eps at T=13\n"
         << "  --epsilon-values LIST  Sweep values (default: .1,.3,.5,.7,.9)\n"
         << "  --bucket-eps-values L  Sweep values (default: 1e-5,...,1e-1)\n"
-        << "  --fixed-epsilon X      Epsilon during bucket_eps sweep (default: .5)\n"
+        << "  --fixed-epsilon X      Epsilon during bucket_eps sweep (default: .9)\n"
         << "  --fixed-bucket-eps X   Bucket width during epsilon sweep (default: 1e-4)\n"
         << "  --python COMMAND       Python command for graph_generator.py\n"
         << "  --reuse-inputs         Do not regenerate round_*.input files\n"
@@ -390,11 +390,11 @@ unique_ptr<AlgorithmBase> make_algorithm(
     }
     if(spec.algorithm == "EFiRAP") {
         return unique_ptr<AlgorithmBase>(
-            new EFiRAP(graph, requests, paths));
+            new EFiRAP(graph, requests, paths, spec.epsilon));
     }
     if(spec.algorithm == "EFiRAP-time") {
         return unique_ptr<AlgorithmBase>(
-            new EFiRAP_longtime(graph, requests, paths));
+            new EFiRAP_longtime(graph, requests, paths, spec.epsilon));
     }
     throw invalid_argument("unknown algorithm: " + spec.algorithm);
 }
@@ -429,7 +429,7 @@ vector<RunSpec> build_run_specs(const Config& config) {
             spec.epsilon = config.fixed_epsilon;
             spec.bucket_eps = config.fixed_bucket_eps;
         } else {
-            spec.epsilon = 0.0;
+            spec.epsilon = config.fixed_epsilon;
             spec.bucket_eps = 0.0;
         }
         specs.push_back(spec);

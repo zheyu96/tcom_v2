@@ -14,7 +14,7 @@ class MyAlgo1 : public AlgorithmBase {
     vector<vector<vector<double>>> dp;
     vector<vector<vector<bool>>> caled;
     vector<vector<vector<int>>> par;
-    double epsilon, obj;
+    double epsilon = EXPERIMENT_EPSILON, obj;
     void variable_initialize();
     Shape_vector separation_oracle();
     pair<Shape_vector, double> find_min_shape(int src, int dst, double alp);
@@ -22,6 +22,7 @@ class MyAlgo1 : public AlgorithmBase {
     Shape_vector recursion_find_shape(int left, int right, int t, const vector<int> &path);
 public:
     MyAlgo1(const Graph& graph, const vector<pair<int, int>>& requests, const map<SDpair, vector<Path>>& paths);
+    void set_epsilon(double value) { epsilon = value; }
     void run();
 };
 
