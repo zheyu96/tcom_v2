@@ -217,7 +217,7 @@ class ChartGenerator:
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'runtime':{
-            'request_cnt': (0,0.1,0.02,1), 'tao': "auto", 'time_limit': (0,3,1,1),
+            'request_cnt': "auto", 'tao': "auto", 'time_limit': "auto",
             'avg_memory': "auto", 'mem_vary': "auto", 'topo_vary': "auto",
             'mem_distribution': "auto", 'path_set': "auto",
             'min_fidelity': "auto", 'fidelity_threshold': "auto",
