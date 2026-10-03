@@ -1,22 +1,19 @@
 #include "../../Network/Purification/Purification.h"
-#include "WernerAlgo2.h"
+#include "BeforeWernerAlgo2.h"
 #include <fstream> 
 #include <iostream>
 #include <cmath>
 
 using namespace std;
 
-WernerAlgo2::WernerAlgo2(const Graph& graph,const vector<pair<int,int>>& requests,const map<SDpair, vector<Path>>& paths,double epsilon,double bucket_eps,int max_purification_rounds): AlgorithmBase(graph, requests, paths)
+BeforeWernerAlgo2::BeforeWernerAlgo2(const Graph& graph,const vector<pair<int,int>>& requests,const map<SDpair, vector<Path>>& paths,double epsilon,double bucket_eps): AlgorithmBase(graph, requests, paths)
 {
-    if(max_purification_rounds < 0 || max_purification_rounds > 3)
-        throw invalid_argument("purification rounds must be between 0 and 3");
-    purify_time = max_purification_rounds;
-    algorithm_name = purify_time == 0 ? "ZFA" : "ZFA2";
+    algorithm_name = "ZFA2";
     this->epsilon = epsilon;
     this->bucket_eps = bucket_eps;
 }
 
-void WernerAlgo2::variable_initialize() {
+void BeforeWernerAlgo2::variable_initialize() {
     // 與 MyAlgo1 類似：初始化 dual 與目標
     int m = (int)requests.size()
           + graph.get_num_nodes() * graph.get_time_limit();
@@ -24,8 +21,6 @@ void WernerAlgo2::variable_initialize() {
     double delta = (1 + epsilon) * (1.0 / pow((1 + epsilon) * m, 1.0 / epsilon));
     obj = m * delta;
 
-    solver_stats = SolverStats{};
-    shape_purify_map.clear();
     alpha.assign(requests.size(), delta);
     x.clear();
     x.resize(requests.size());
@@ -132,14 +127,11 @@ void WernerAlgo2::variable_initialize() {
         1, min(MAX_ORACLE_WORKERS, omp_get_max_threads()));
     dp_workspaces.clear();
     dp_workspaces.resize(oracle_worker_count);
-    worker_stats.assign(oracle_worker_count, SolverStats{});
     dirty_nodes.assign(V, 0);
     dirty_alpha_idxs.assign(requests.size(), 0);
 }
 
-Shape_vector WernerAlgo2::separation_oracle(){
-    const auto oracle_start = chrono::steady_clock::now();
-    ++solver_stats.oracle_calls;
+Shape_vector BeforeWernerAlgo2::separation_oracle(){
     double most_violate=1e9;
     Shape_vector todo_shape;
     vector<int> best_purify_rounds;
@@ -201,9 +193,6 @@ Shape_vector WernerAlgo2::separation_oracle(){
             const Path& path = *metadata.path;
             int T=dpp.T+5;
             int n=path.size()+5;
-            const auto dp_start = chrono::steady_clock::now();
-            auto& stats = worker_stats[omp_get_thread_num()];
-            ++stats.dp_paths;
             DPTable& dp_table = dp_workspaces[omp_get_thread_num()];
             dp_table.resize(T);
             for(int ii=0;ii<(int)dp_table.size();ii++){
@@ -221,8 +210,6 @@ Shape_vector WernerAlgo2::separation_oracle(){
                             dp_table);
             }
 
-            stats.dp_seconds += chrono::duration<double>(
-                chrono::steady_clock::now() - dp_start).count();
             const int horizon = (int)dpp.T;
             vector<vector<double>> terminal_factors(horizon + 1);
             for(int t = 1; t <= horizon; ++t) {
@@ -324,11 +311,9 @@ Shape_vector WernerAlgo2::separation_oracle(){
                 it->second = best_purify_rounds;
         }
     }
-    solver_stats.oracle_seconds += chrono::duration<double>(
-        chrono::steady_clock::now() - oracle_start).count();
     return todo_shape;
 }
-WernerAlgo2::ZLabel WernerAlgo2::gen_leaf_label(
+BeforeWernerAlgo2::ZLabel BeforeWernerAlgo2::gen_leaf_label(
     int s, int e, int st, int tlen, int path_a, int path_b,
     double leaf_Z, double leaf_P) {
     double Bleaf=0.0;
@@ -341,23 +326,42 @@ WernerAlgo2::ZLabel WernerAlgo2::gen_leaf_label(
     return ZLabel(
         Bleaf,leaf_Z,leaf_P,Op::LEAF,tlen-1,path_a,path_b,st,-1);
 } 
-void WernerAlgo2::run_dp_in_t(
+void BeforeWernerAlgo2::run_dp_in_t(
     const Path& path, const DPParam& dpp, int t,
     const vector<double>& swap_log_prob,
     const vector<vector<double>>& leaf_Z,
     const vector<vector<double>>& leaf_P,
     DPTable& dp_table) {
     const int n = (int)path.size();
-    // Both purification modes keep all bucket representatives. No hard
-    // candidate/label budget truncates one side of the ablation.
-    auto& stats = worker_stats[omp_get_thread_num()];
+    // Finer Z/P buckets only improve decisions if the retained-label limits
+    // grow with them.  Otherwise the later hard truncation would discard the
+    // additional alternatives produced by the smaller bucket epsilon.
+    const size_t MAX_CANDIDATES_PER_CELL = 5000;
+    const size_t MAX_LABELS_PER_CELL = 500;
     // A deliberately loose squared limit lets the merge loop reject values
     // that cannot possibly pass the original sqrt(Z2) <= Zhat test. Values
     // near the boundary still execute that exact original test.
     const double reject_Z_squared = dpp.Zhat * dpp.Zhat *
         (1.0 + 16.0 * numeric_limits<double>::epsilon());
     vector<double> right_Z_squared;
-    right_Z_squared.reserve(16);
+    right_Z_squared.reserve(MAX_LABELS_PER_CELL);
+    auto trim_cell = [&](vector<ZLabel>& labels) {
+        if(labels.size() <= MAX_LABELS_PER_CELL) return;
+        nth_element(labels.begin(), labels.begin() + MAX_LABELS_PER_CELL, labels.end(),
+            [](const ZLabel& x, const ZLabel& y) {
+                if(x.B != y.B) return x.B < y.B;
+                return x.Z < y.Z;
+            });
+        labels.resize(MAX_LABELS_PER_CELL);
+        bucket_by_ZP(labels);
+        if(labels.size() > MAX_LABELS_PER_CELL) {
+            sort(labels.begin(), labels.end(), [](const ZLabel& x, const ZLabel& y) {
+                if(x.B != y.B) return x.B < y.B;
+                return x.Z < y.Z;
+            });
+            labels.resize(MAX_LABELS_PER_CELL);
+        }
+    };
 
     // -------- t = 1..T-1 外圈時間迴圈 --------
     for(int a=0;a<n-1;a++)
@@ -367,7 +371,8 @@ void WernerAlgo2::run_dp_in_t(
             const double destination_beta = beta[e][t];
             vector<ZLabel>& cand = dp_table[t][a][b];
             cand.clear();
-            if(cand.capacity() < 16) cand.reserve(16);
+            if(cand.capacity() < MAX_LABELS_PER_CELL * 2)
+                cand.reserve(MAX_LABELS_PER_CELL * 2);
             //leaf
             if(a+1==b){
                 for(int i=0;i<=purify_time;i++){
@@ -384,7 +389,7 @@ void WernerAlgo2::run_dp_in_t(
             }
             //continue
             const auto& pre=dp_table[t-1][a][b];
-            for(int p_id=0;p_id<pre.size();p_id++){
+            for(int p_id=0;p_id<pre.size() && cand.size() < MAX_CANDIDATES_PER_CELL;p_id++){
                 double Zp=pre[p_id].Z+dpp.eta;
                 if(Zp<=dpp.Zhat){
                     double Bp=pre[p_id].B+source_beta+destination_beta;
@@ -395,6 +400,7 @@ void WernerAlgo2::run_dp_in_t(
             }
             //merge
             for(int k=a+1;k<b;k++){
+                if(cand.size() >= MAX_CANDIDATES_PER_CELL) break;
                 const auto& L1=dp_table[t-1][a][k];
                 const auto& L2=dp_table[t-1][k][b];
                 if(L1.size()==0||L2.size()==0) continue;
@@ -409,7 +415,7 @@ void WernerAlgo2::run_dp_in_t(
                         min_right_Z_squared = squared;
                 }
                 const double swap_prob=swap_log_prob[k];
-                for(int lid=0;lid<L1.size();lid++)
+                for(int lid=0;lid<L1.size() && cand.size() < MAX_CANDIDATES_PER_CELL;lid++)
                 {
                         const auto& left_seg=L1[lid];
                         const double left_Z = left_seg.Z + dpp.eta;
@@ -419,7 +425,7 @@ void WernerAlgo2::run_dp_in_t(
                                reject_Z_squared) {
                             continue;
                         }
-                    for(int rid=0;rid<L2.size();rid++){
+                    for(int rid=0;rid<L2.size() && cand.size() < MAX_CANDIDATES_PER_CELL;rid++){
                         const auto& right_seg=L2[rid];
                         const double Z_squared =
                             left_Z_squared + right_Z_squared[rid];
@@ -436,7 +442,6 @@ void WernerAlgo2::run_dp_in_t(
                     }
                 }
             }
-            stats.peak_candidates = max(stats.peak_candidates, cand.size());
             vector<ZLabel> non_leaf;
             non_leaf.reserve(cand.size());
             for (auto& L : cand) {
@@ -444,6 +449,7 @@ void WernerAlgo2::run_dp_in_t(
                     non_leaf.push_back(std::move(L));
             }
             bucket_by_ZP(non_leaf);// trimming non-leaf
+            trim_cell(non_leaf);
             cand.erase(
                 remove_if(cand.begin(), cand.end(),
                         [](const ZLabel& L){ return L.op != Op::LEAF; }),
@@ -451,11 +457,11 @@ void WernerAlgo2::run_dp_in_t(
             cand.insert(cand.end(),
                         make_move_iterator(non_leaf.begin()),
                         make_move_iterator(non_leaf.end()));
-            stats.peak_labels = max(stats.peak_labels, cand.size());
+            trim_cell(cand);
         }
 }
 
-void WernerAlgo2::pareto_prune_byZ(vector<ZLabel>& cand) {
+void BeforeWernerAlgo2::pareto_prune_byZ(vector<ZLabel>& cand) {
     if (cand.empty()) return;
     sort(cand.begin(), cand.end(), [](const ZLabel& x, const ZLabel& y){
         if(x.Z!=y.Z) return x.Z < y.Z;
@@ -472,7 +478,7 @@ void WernerAlgo2::pareto_prune_byZ(vector<ZLabel>& cand) {
     cand.swap(kept);
 }
 
-void WernerAlgo2::bucket_by_ZP(vector<ZLabel>& cand) {
+void BeforeWernerAlgo2::bucket_by_ZP(vector<ZLabel>& cand) {
     if (cand.empty()) return;
     double deltaP=dpp.deltaP;
     if(deltaP <= 0.0) {
@@ -530,7 +536,7 @@ void WernerAlgo2::bucket_by_ZP(vector<ZLabel>& cand) {
     cand.swap(bucketed);
 }
 
-Shape_vector WernerAlgo2::backtrack_shape(
+Shape_vector BeforeWernerAlgo2::backtrack_shape(
     const ZLabel& leaf, const vector<int>& path,
     vector<int>& out_purify_rounds, const DPTable& dp_table){
     int left_id=path[leaf.a],right_id=path[leaf.b];
@@ -599,12 +605,12 @@ Shape_vector WernerAlgo2::backtrack_shape(
     out_purify_rounds.clear();
     return Shape_vector{};
 }
-int WernerAlgo2::split_dis(int s, int d, const WernerAlgo2::ZLabel& L){
-    if(L.op!=WernerAlgo2::Op::MERGE||L.k<0) return 1000000000;
+int BeforeWernerAlgo2::split_dis(int s, int d, const BeforeWernerAlgo2::ZLabel& L){
+    if(L.op!=BeforeWernerAlgo2::Op::MERGE||L.k<0) return 1000000000;
     int mid=(s+d)/2;
     return abs(mid-L.k);
 }
-pair<double,WernerAlgo2::ZLabel> WernerAlgo2::eval_best_J(
+pair<double,BeforeWernerAlgo2::ZLabel> BeforeWernerAlgo2::eval_best_J(
     int s, int d, int t, double alp, const DPTable& dp_table,
     const vector<double>& terminal_factors){
     double bestJ=1e18;
@@ -630,13 +636,15 @@ pair<double,WernerAlgo2::ZLabel> WernerAlgo2::eval_best_J(
     else return {INF,tmp};
 }
 
-void WernerAlgo2::run() {
+void BeforeWernerAlgo2::run() {
     int round = 1;
     while (round-- && !requests.empty()) {
         variable_initialize();
         //cerr << "\033[1;31m"<< "[WernerAlgo's parameter] : "<< dpp.Zmin<<" "<<dpp.eps_bucket<<" "<<dpp.eta<< "\033[0m"<< endl;
         int it=0;
-        while (obj < 1.0) {
+        double eps=1e-4;
+        const int REUSE = 20;  // 每次 oracle 找到 shape 後重複灌 REUSE 次流量
+        while (obj+eps < 1.0) {
             it++;
             Shape_vector shape=separation_oracle();
             if (shape.empty()) break;
@@ -646,7 +654,7 @@ void WernerAlgo2::run() {
             if(shape_purify_map.count(shape))
                 cur_purify_rounds = shape_purify_map[shape];
 
-            // Reuse this schedule while its dual cost stays close to the initial cost.
+            // 計算 total_need_q（只算一次，REUSE 次共用）
             map<pair<int,int>, int> total_need_q;
             for(int i=0;i<(int)shape.size();i++){
                 for(pair<int,int> usedtime:shape[i].second){
@@ -670,18 +678,17 @@ void WernerAlgo2::run() {
                 }
             }
 
-            // Reuse this schedule while its dual cost stays close to the initial cost.
-            double q = 1.0;
-            for(auto& P : total_need_q){
-                int node_id = P.first.first, t = P.first.second;
-                double theta = P.second;
-                double cap = graph.get_node_memory_at(node_id, t);
-                if(cap > 0) q = min(q, cap / theta);
-                else q = 0;
-            }
-            if(q<=1e-10) break;
-            double initial_cost = 0;
-            for(int reuse = 0; reuse < oracle_reuse && obj < 1.0; ++reuse) {
+            // 同一個 shape 灌 REUSE 次流量
+            for(int reuse = 0; reuse < REUSE && obj+eps < 1.0; reuse++) {
+                double q = 1.0;
+                for(auto& P : total_need_q){
+                    int node_id = P.first.first, t = P.first.second;
+                    double theta = P.second;
+                    double cap = graph.get_node_memory_at(node_id, t);
+                    if(cap > 0) q = min(q, cap / theta);
+                    else q = 0;
+                }
+                if(q<=1e-10) break;
                 int req_idx=-1;
                 for(int i=0;i<requests.size();i++){
                     int ln=shape.front().first,rn=shape.back().first;
@@ -692,16 +699,7 @@ void WernerAlgo2::run() {
                     }
                 }
                 if(req_idx==-1) break;
-                if(oracle_reuse > 1) {
-                    double current_cost = alpha[req_idx];
-                    for(const auto& slot : total_need_q)
-                        current_cost += slot.second * beta[slot.first.first][slot.first.second];
-                    if(reuse == 0) initial_cost = current_cost;
-                    // Heuristic guard; this does not bound final rounded quality.
-                    else if(current_cost > initial_cost * (1 + reuse_cost_growth)) break;
-                }
                 dirty_alpha_idxs[req_idx] = 1;
-                ++solver_stats.dual_updates;
                 x[req_idx][shape]+=q;
                 double ori=alpha[req_idx];
                 alpha[req_idx]=alpha[req_idx]*(1+epsilon*q);
@@ -717,11 +715,11 @@ void WernerAlgo2::run() {
                     }
                     obj += (beta[node_id][t] - original) * graph.get_node_memory_at(node_id, t);
                 }
-
-                // Mark dirty nodes for incremental oracle
-                for(int i=0;i<(int)shape.size();i++)
-                    dirty_nodes[shape[i].first] = 1;
             }
+
+            // Mark dirty nodes for incremental oracle
+            for(int i=0;i<(int)shape.size();i++)
+                dirty_nodes[shape[i].first] = 1;
         }
         cerr << "[" << algorithm_name << "] LP done, " << it << " oracle calls" << endl;
         vector<pair<double, Shape_vector>> shapes;
@@ -957,12 +955,6 @@ void WernerAlgo2::run() {
             }
             }
         }
-    }
-    for(const auto& stats : worker_stats) {
-        solver_stats.dp_paths += stats.dp_paths;
-        solver_stats.dp_seconds += stats.dp_seconds;
-        solver_stats.peak_candidates = max(solver_stats.peak_candidates, stats.peak_candidates);
-        solver_stats.peak_labels = max(solver_stats.peak_labels, stats.peak_labels);
     }
     update_res();
     cerr << "[" << algorithm_name << "] end" << endl;

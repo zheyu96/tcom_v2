@@ -1,0 +1,3 @@
+sweep,parameter_value,algorithm,epsilon,bucket_eps,threads,samples,mean_seconds,median_seconds,stddev_seconds,min_seconds,max_seconds
+request_cnt,100.000000000,ZFA,0.900000000,0.000100000,1,15,0.106283800,0.103059200,0.023071949,0.075222100,0.157072700
+request_cnt,100.000000000,ZFA2,0.900000000,0.000100000,1,15,1.433725427,1.354747200,0.293342236,1.054788900,2.046353100

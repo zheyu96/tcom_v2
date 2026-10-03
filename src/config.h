@@ -21,6 +21,9 @@
 
 // Shared approximation precision for all experiment drivers.
 inline constexpr double EXPERIMENT_EPSILON = 0.9;
+// Shared bounded oracle reuse for WPFA and its zero-purification variant.
+inline constexpr int EXPERIMENT_ORACLE_REUSE = 4;
+inline constexpr double EXPERIMENT_REUSE_COST_GROWTH = 0.10;
 
 extern bool DEBUG;
 extern double EPS;

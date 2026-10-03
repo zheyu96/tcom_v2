@@ -1,0 +1,3 @@
+sweep,parameter_value,request_count,fidelity_threshold,time_limit,instance,repetition,algorithm,epsilon,bucket_eps,threads,run_seconds,fidelity_gain,succ_request_cnt,actual_req_cnt,purification_rounds,oracle_calls,dual_updates,dp_paths,oracle_seconds,dp_seconds,peak_candidates,peak_labels
+request_cnt,100.000000000,100,0.800000000,13,0,0,ZFA,0.900000000,0.000100000,1,0.163558600,40.403580689,52.175352544,60.000000000,0,305,305,7128,0.158608100,0.130907400,25,25
+request_cnt,100.000000000,100,0.800000000,13,0,0,ZFA2,0.900000000,0.000100000,1,1.722733200,53.006229036,69.189299848,89.000000000,3,362,362,8021,1.716278900,1.384827800,680,679

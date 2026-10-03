@@ -188,7 +188,7 @@ Algorithm/MyAlgo6/MyAlgo6.o: Algorithm/MyAlgo6/MyAlgo6.cpp Algorithm/MyAlgo6/MyA
 	g++ -c $(gcc_flag) Algorithm/MyAlgo6/MyAlgo6.cpp -o Algorithm/MyAlgo6/MyAlgo6.o
 
 # Werner 演算法編譯規則
-Algorithm/WernerAlgo/WernerAlgo.o: Algorithm/WernerAlgo/WernerAlgo.cpp Algorithm/WernerAlgo/WernerAlgo.h config.h $(core_headers)
+Algorithm/WernerAlgo/WernerAlgo.o: Algorithm/WernerAlgo/WernerAlgo.cpp Algorithm/WernerAlgo/WernerAlgo.h Algorithm/WernerAlgo2/WernerAlgo2.h config.h $(core_headers)
 	g++ -c $(gcc_flag) Algorithm/WernerAlgo/WernerAlgo.cpp -o Algorithm/WernerAlgo/WernerAlgo.o
 Algorithm/WernerAlgo2/WernerAlgo2.o: Algorithm/WernerAlgo2/WernerAlgo2.cpp Algorithm/WernerAlgo2/WernerAlgo2.h Network/Purification/Purification.h config.h $(core_headers)
 	g++ -c $(gcc_flag) Algorithm/WernerAlgo2/WernerAlgo2.cpp -o Algorithm/WernerAlgo2/WernerAlgo2.o

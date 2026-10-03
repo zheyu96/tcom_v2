@@ -96,6 +96,8 @@ struct Config {
     // All algorithms with an approximation epsilon receive this value.
     double epsilon = MAIN_TIME_EPSILON;
     double bucket_eps = MAIN_TIME_BUCKET_EPS;
+    int oracle_reuse = EXPERIMENT_ORACLE_REUSE;
+    double reuse_cost_growth = EXPERIMENT_REUSE_COST_GROWTH;
     bool regenerate_inputs = true;
     bool show_algorithm_output = false;
 };
@@ -118,6 +120,11 @@ struct Sample {
     int repetition = 0;
     string algorithm;
     double seconds = 0.0;
+    double fidelity_gain = 0.0, succ_request_cnt = 0.0, actual_req_cnt = 0.0;
+    size_t oracle_calls = 0, dual_updates = 0, dp_paths = 0;
+    size_t peak_candidates = 0, peak_labels = 0;
+    double oracle_seconds = 0.0, dp_seconds = 0.0;
+    int purification_rounds = -1;
 };
 
 class NullBuffer : public streambuf {
@@ -274,6 +281,8 @@ void print_usage(const char* executable) {
         << "  --input-pattern PATH       {} is replaced by the instance index\n"
         << "  --output-dir PATH          Existing output directory (default: ../data/ans)\n"
         << "  --python COMMAND           Graph generator command (default: python3)\n"
+        << "  --oracle-reuse N           Maximum updates per Werner oracle (default: 4)\n"
+        << "  --reuse-cost-growth X      Relative cost drift allowed (default: 0.10)\n"
         << "  --reuse-inputs             Use existing input files\n"
         << "  --show-algorithm-output    Do not suppress algorithm stdout/stderr\n"
         << "  --help                     Show this message\n\n"
@@ -351,6 +360,13 @@ Config parse_arguments(int argc, char** argv) {
                 throw invalid_argument(option + " expects one positive number");
             }
             config.bucket_eps = parsed.front();
+        } else if(option == "--oracle-reuse") {
+            config.oracle_reuse = parse_nonnegative_integer(require_value(index, option), option, false);
+        } else if(option == "--reuse-cost-growth") {
+            auto parsed = parse_number_list(require_value(index, option), option);
+            if(parsed.size() != 1 || !isfinite(parsed.front()) || parsed.front() < 0)
+                throw invalid_argument(option + " expects one finite nonnegative number");
+            config.reuse_cost_growth = parsed.front();
         } else if(option == "--input-pattern") {
             config.input_pattern = require_value(index, option);
         } else if(option == "--output-dir") {
@@ -536,21 +552,27 @@ unique_ptr<AlgorithmBase> make_algorithm(
     const map<SDpair, vector<Path>>& paths,
     const string& experiment_label,
     double epsilon,
-    double bucket_eps) {
+    double bucket_eps,
+    int oracle_reuse = EXPERIMENT_ORACLE_REUSE,
+    double reuse_cost_growth = EXPERIMENT_REUSE_COST_GROWTH) {
     if(name == "ZFA_UB") {
         auto algorithm = make_unique<WernerAlgo3>(graph, requests, paths);
         algorithm->set_epsilon(epsilon);
         return algorithm;
     }
     if(name == "ZFA") {
-        return unique_ptr<AlgorithmBase>(
-            new WernerAlgo(graph, requests, paths, epsilon, bucket_eps));
+        auto algorithm = make_unique<WernerAlgo>(graph, requests, paths, epsilon, bucket_eps);
+        algorithm->set_detailed_logging(false);
+        algorithm->set_experiment_label(experiment_label);
+        algorithm->set_oracle_reuse(oracle_reuse, reuse_cost_growth);
+        return algorithm;
     }
     if(name == "ZFA2") {
         unique_ptr<WernerAlgo2> algorithm(
             new WernerAlgo2(graph, requests, paths, epsilon, bucket_eps));
         algorithm->set_detailed_logging(false);
         algorithm->set_experiment_label(experiment_label);
+        algorithm->set_oracle_reuse(oracle_reuse, reuse_cost_growth);
         return unique_ptr<AlgorithmBase>(algorithm.release());
     }
     if(name == "MyAlgo1") {
@@ -586,7 +608,7 @@ Sample run_sample(
         " repetition=" + to_string(repetition);
     unique_ptr<AlgorithmBase> algorithm = make_algorithm(
         algorithm_name, graph, requests, paths, label,
-        config.epsilon, config.bucket_eps);
+        config.epsilon, config.bucket_eps, config.oracle_reuse, config.reuse_cost_growth);
 
     chrono::steady_clock::time_point start;
     chrono::steady_clock::time_point finish;
@@ -604,6 +626,20 @@ Sample run_sample(
     sample.repetition = repetition;
     sample.algorithm = algorithm_name;
     sample.seconds = chrono::duration<double>(finish - start).count();
+    sample.fidelity_gain = algorithm->get_res("fidelity_gain");
+    sample.succ_request_cnt = algorithm->get_res("succ_request_cnt");
+    sample.actual_req_cnt = algorithm->get_res("actual_req_cnt");
+    if(auto* werner = dynamic_cast<WernerAlgo2*>(algorithm.get())) {
+        const auto& stats = werner->get_solver_stats();
+        sample.oracle_calls = stats.oracle_calls;
+        sample.dual_updates = stats.dual_updates;
+        sample.dp_paths = stats.dp_paths;
+        sample.peak_candidates = stats.peak_candidates;
+        sample.peak_labels = stats.peak_labels;
+        sample.oracle_seconds = stats.oracle_seconds;
+        sample.dp_seconds = stats.dp_seconds;
+        sample.purification_rounds = werner->get_max_purification_rounds();
+    }
     return sample;
 }
 
@@ -651,7 +687,7 @@ void write_summary(const Config& config, const vector<Sample>& samples) {
     ofstream output(filename, ios::trunc);
     if(!output) throw runtime_error("cannot open summary output: " + filename);
     output << "sweep,parameter_value,algorithm,epsilon,bucket_eps,threads,samples,mean_seconds,"
-              "median_seconds,stddev_seconds,min_seconds,max_seconds\n";
+              "median_seconds,stddev_seconds,min_seconds,max_seconds,oracle_reuse,reuse_cost_growth\n";
     output << fixed << setprecision(9);
 
     for(const string& sweep : config.sweeps) {
@@ -675,7 +711,8 @@ void write_summary(const Config& config, const vector<Sample>& samples) {
                        << config.epsilon << ',' << config.bucket_eps << ','
                        << config.threads << ',' << runtimes.size() << ',' << mean << ','
                        << median(runtimes) << ',' << standard_deviation << ','
-                       << *bounds.first << ',' << *bounds.second << '\n';
+                       << *bounds.first << ',' << *bounds.second << ','
+                       << config.oracle_reuse << ',' << config.reuse_cost_growth << '\n';
             }
         }
     }
@@ -748,7 +785,9 @@ int main(int argc, char** argv) {
         if(!raw_output) throw runtime_error("cannot open raw output: " + raw_filename);
         raw_output << "sweep,parameter_value,request_count,fidelity_threshold,"
                       "time_limit,instance,repetition,algorithm,epsilon,"
-                      "bucket_eps,threads,run_seconds\n";
+                      "bucket_eps,threads,run_seconds,fidelity_gain,succ_request_cnt,"
+                      "actual_req_cnt,purification_rounds,oracle_calls,dual_updates,"
+                      "dp_paths,oracle_seconds,dp_seconds,peak_candidates,peak_labels,oracle_reuse,reuse_cost_growth\n";
         raw_output << fixed << setprecision(9);
 
         cout << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] algorithm columns:";
@@ -757,7 +796,9 @@ int main(int argc, char** argv) {
              << '[' << RUNTIME_BENCHMARK_LOG_NAME
              << "] ZFA and ZFA2/WPFA epsilon=" << config.epsilon
              << " bucket_eps=" << config.bucket_eps
-             << " threads=" << config.threads << '\n';
+             << " threads=" << config.threads
+             << " oracle_reuse=" << config.oracle_reuse
+             << " reuse_cost_growth=" << config.reuse_cost_growth << '\n';
 
         vector<Sample> samples;
         for(const string& sweep : config.sweeps) {
@@ -799,7 +840,13 @@ int main(int argc, char** argv) {
                                        << config.epsilon << ','
                                        << config.bucket_eps << ','
                                        << config.threads << ','
-                                       << sample.seconds << '\n';
+                                       << sample.seconds << ',' << sample.fidelity_gain << ','
+                                       << sample.succ_request_cnt << ',' << sample.actual_req_cnt << ','
+                                       << sample.purification_rounds << ',' << sample.oracle_calls << ','
+                                       << sample.dual_updates << ',' << sample.dp_paths << ','
+                                       << sample.oracle_seconds << ',' << sample.dp_seconds << ','
+                                       << sample.peak_candidates << ',' << sample.peak_labels << ','
+                                       << config.oracle_reuse << ',' << config.reuse_cost_growth << '\n';
                             raw_output.flush();
                             cout << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] "
                                  << sweep << '=' << value

@@ -1,11 +1,10 @@
-#ifndef __WERNER_ALGO2_H
-#define __WERNER_ALGO2_H
+#ifndef __BEFORE_WERNER_ALGO2_H
+#define __BEFORE_WERNER_ALGO2_H
 
-#include "../AlgorithmBase/AlgorithmBase.h"
+#include "../../Algorithm/AlgorithmBase/AlgorithmBase.h"
 #include "../../Network/Graph/Graph.h"
 #include "../../config.h"
 
-#include <chrono>
 #include <map>
 #include <memory>
 #include <vector>
@@ -26,30 +25,17 @@ using namespace std;
  * 1) 這份碼假設 AlgorithmBase / Graph / Shape / DPParam / Path / SDpair / INF 存在
  * 2) 若你的名稱不同，請在此檔調整 include 與型別別名
  */
-class WernerAlgo2 : public AlgorithmBase {
+class BeforeWernerAlgo2 : public AlgorithmBase {
 public:
     #define double long double
-    WernerAlgo2(const Graph& graph,
+    BeforeWernerAlgo2(const Graph& graph,
                const vector<pair<int,int>>& requests,
                const map<SDpair, vector<Path>>& paths,
                double epsilon = EXPERIMENT_EPSILON,
                // WPFA uses finer Z/P buckets than the shared graph default.
                // Runtime experiments can still override this explicitly.
-               double bucket_eps = 0.001,
-               int max_purification_rounds = 3);
+               double bucket_eps = 0.001);
 
-    struct SolverStats {
-        size_t oracle_calls = 0, dp_paths = 0, dual_updates = 0;
-        size_t peak_candidates = 0, peak_labels = 0;
-        double oracle_seconds = 0, dp_seconds = 0;
-    };
-    const SolverStats& get_solver_stats() const { return solver_stats; }
-    int get_max_purification_rounds() const { return purify_time; }
-    void set_oracle_reuse(int n, double growth = EXPERIMENT_REUSE_COST_GROWTH) {
-        if(n < 1 || !isfinite(growth) || growth < 0) throw invalid_argument("invalid reuse controls");
-        oracle_reuse = n; reuse_cost_growth = growth;
-    }
-    int get_oracle_reuse() const { return oracle_reuse; }
     void run();
     void set_experiment_label(const string& label) { experiment_label = label; }
     void set_detailed_logging(bool enabled) { detailed_logging = enabled; }
@@ -82,8 +68,6 @@ private:
     double epsilon = EXPERIMENT_EPSILON;
     double bucket_eps = -1.0;
     bool detailed_logging = true;
-    int oracle_reuse = EXPERIMENT_ORACLE_REUSE;
-    double reuse_cost_growth = EXPERIMENT_REUSE_COST_GROWTH;
     double obj = 0.0;
     vector<double> alpha;                 // 每個 request 的 dual
     vector<vector<double>> beta;          // beta[v][t]：節點-時間 dual
@@ -109,8 +93,8 @@ private:
     Shape_vector backtrack_shape(const ZLabel& leaf, const vector<int>& path,
                                  vector<int>& out_purify_rounds,
                                  const DPTable& dp_table);
-    int split_dis(int s, int d, const WernerAlgo2::ZLabel& L);
-    pair<double,WernerAlgo2::ZLabel> eval_best_J(
+    int split_dis(int s, int d, const BeforeWernerAlgo2::ZLabel& L);
+    pair<double,BeforeWernerAlgo2::ZLabel> eval_best_J(
         int s, int d, int t, double alp, const DPTable& dp_table,
         const vector<double>& terminal_factors);
     int purify_time=3;
@@ -154,11 +138,9 @@ private:
     // nested vectors on every oracle call.
     int oracle_worker_count = 1;
     vector<DPTable> dp_workspaces;
-    SolverStats solver_stats;
-    vector<SolverStats> worker_stats;
     vector<vector<unsigned char>> oracle_available;
     vector<unsigned char> dirty_nodes;
     vector<unsigned char> dirty_alpha_idxs;
 };
 
-#endif // __WERNER_ALGO2_H
+#endif // __BEFORE_WERNER_ALGO2_H
