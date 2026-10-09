@@ -245,7 +245,7 @@ class ChartGenerator:
         },
         'runtime':{
             'request_cnt': (0,5,1,1), 'tao': "auto", 'time_limit': (0,5,1,1),
-            'avg_memory': "auto", 'mem_vary': "auto", 'topo_vary': "auto",
+            'avg_memory': (0,5,1,1), 'mem_vary': "auto", 'topo_vary': "auto",
             'mem_distribution': "auto", 'path_set': "auto",
             'min_fidelity': "auto", 'fidelity_threshold': (0,5,1,1),
             'swap_prob': "auto", 'hop_count': "auto", 'entangle_time': "auto",
@@ -579,7 +579,8 @@ class ChartGenerator:
 
         # Y 軸處理
         raw_max = max(max(y[i]) for i in visible_indices)
-        Ypow = self._pick_engineering_exp(abs(raw_max))
+        # Runtime ANS/CSV values are seconds; keep that unit on every chart.
+        Ypow = 0 if y_key == "runtime" else self._pick_engineering_exp(abs(raw_max))
         Ydiv = float(10 ** Ypow) if Ypow != 0 else 1.0
 
         max_data, min_data = -math.inf, math.inf
@@ -754,6 +755,10 @@ class ChartGenerator:
         ax1.tick_params(axis='y', which='minor', length=4, labelsize=0)
 
         def _fmt_y(val, pos):
+            if y_key == "runtime":
+                return np.format_float_positional(
+                    0.0 if abs(val) < 1e-12 else val, precision=9, trim='-'
+                )
             if y_key == "actual_req_cnt":
                 return f"{val / 10:g}"
             if abs(val) >= 100 or abs(val) == int(val): return f"{val:.0f}"

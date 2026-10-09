@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <limits>
 #include <cassert>
+#include <cstdint>
 
 using namespace std;
 
@@ -28,7 +29,8 @@ using namespace std;
  */
 class WernerAlgo2 : public AlgorithmBase {
 public:
-    #define double long double
+    // WPFA uses plain double. The former `#define double long double` forced
+    // x87 arithmetic, doubled the label size and leaked into every includer.
     WernerAlgo2(const Graph& graph,
                const vector<pair<int,int>>& requests,
                const map<SDpair, vector<Path>>& paths,
@@ -57,21 +59,24 @@ public:
 private:
     // ===== Werner DP Label =====
     enum class Op : unsigned char { LEAF = 0, CONT = 1, MERGE = 2 };
+    // Compact label (56 bytes): the DP is memory-bandwidth bound, so path
+    // positions and slots use int16_t. Paths and horizons are far below 32767.
     class ZLabel {
         public:
         double B= 1000.0;
         double Z = 1000.0;   // 成本 / 目標
         double P=1.0;
-        int purify_type=-1;
-        int a = -1, b = -1, t = -1, k = -1; // 狀態索引與輔助
         int left_id=-1,right_id=-1,parent_id=-1;//左邊第幾個cand和右邊第幾個cand,祖先是第幾個cand
+        int16_t a = -1, b = -1, t = -1, k = -1; // 狀態索引與輔助
+        int16_t ent_start = -1, ent_end = -1;
+        int8_t purify_type=-1;
         Op op = Op::LEAF;
-        int ent_start = -1, ent_end = -1;
         // 回溯
         ZLabel(){}
         ZLabel(double _B, double _Z, double _P, Op _op,int _purify_type, int _a, int _b, int _t, int _k, int pid = -1, int lid = -1, int rid = -1)
-        : B(_B), Z(_Z), P(_P), op(_op),purify_type(_purify_type), a(_a), b(_b), t(_t), k(_k), parent_id(pid), left_id(lid), right_id(rid) {}
-        // Assignment operator (optional, default is sufficient unless custom logic is needed)
+        : B(_B), Z(_Z), P(_P), left_id(lid), right_id(rid), parent_id(pid),
+          a((int16_t)_a), b((int16_t)_b), t((int16_t)_t), k((int16_t)_k),
+          purify_type((int8_t)_purify_type), op(_op) {}
     };
 
     struct DPParam{
@@ -156,7 +161,13 @@ private:
     vector<DPTable> dp_workspaces;
     SolverStats solver_stats;
     vector<SolverStats> worker_stats;
-    vector<vector<unsigned char>> oracle_available;
+    // Lazy oracle state. Duals only grow, so a path's last computed score is
+    // a lower bound on its current score. A stale path is recomputed only
+    // when that bound could still beat the best up-to-date score.
+    vector<vector<int>> entry_task;       // (request, path) -> path_metadata index
+    vector<unsigned char> task_stale;     // path_metadata index -> needs DP
+    vector<double> task_lower_bound;      // min cached score; -inf if never run
+    void recompute_task(const PathMetadata& metadata);
     vector<unsigned char> dirty_nodes;
     vector<unsigned char> dirty_alpha_idxs;
 };

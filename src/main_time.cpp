@@ -75,6 +75,10 @@ const string REQUEST_COUNT = "request_cnt";
 const string FIDELITY_THRESHOLD = "fidelity_threshold";
 const string TIME_LIMIT = "time_limit";
 const string AVG_MEMORY = "avg_memory";
+const vector<string> ALL_SWEEPS{
+    REQUEST_COUNT, FIDELITY_THRESHOLD, TIME_LIMIT, AVG_MEMORY,
+    "tao", "swap_prob", "hop_count", "mem_vary", "topo_vary",
+    "mem_distribution"};
 const vector<string> ALL_ALGORITHMS{
     "ZFA_UB", "ZFA", "ZFA2", "MyAlgo1", "MyAlgo3",
     "EFiRAP", "EFiRAP_longtime"};
@@ -84,11 +88,17 @@ struct Config {
         "../data/input/" RUNTIME_BENCHMARK_INPUT_STEM "_round_{}.input";
     string output_directory = "../data/ans";
     string python_command = "python3";
-    vector<string> sweeps{REQUEST_COUNT, FIDELITY_THRESHOLD, TIME_LIMIT, AVG_MEMORY};
+    vector<string> sweeps = ALL_SWEEPS;
     vector<double> request_counts{80, 100, 120, 140, 160};
     vector<double> fidelity_thresholds{0.70, 0.75, 0.80, 0.85, 0.90};
     vector<double> time_limits{7, 9, 11, 13, 15, 17};
     vector<double> avg_memories{4, 6, 8, 10, 12, 14, 16, 20};
+    map<string, vector<double>> extra_values{
+        {"tao", {0.001,0.002,0.003,0.004,0.005}},
+        {"swap_prob", {0.6,0.7,0.8,0.9,0.95}},
+        {"hop_count", {1,2,3,4,5,6}}, {"mem_vary", {1,2,3,4,5}},
+        {"topo_vary", {0,1,2}}, {"mem_distribution", {0,1,2,3}},
+    };
     vector<string> algorithms = ALL_ALGORITHMS;
     int instances = 5;
     int repetitions = 3;
@@ -110,6 +120,9 @@ struct ExperimentSettings {
     int avg_memory = 10;
     int time_limit = 13;
     double fidelity_threshold = 0.80;
+    double tao = 0.002, swap_prob = 0.9;
+    int hop_count = 0, mem_vary = 1, topo_vary = 0;
+    int mem_distribution = -1;
 };
 
 struct Workload {
@@ -232,6 +245,8 @@ string canonical_sweep_name(const string& value) {
     if(name == "memory" || name == "avg-memory" || name == AVG_MEMORY) {
         return AVG_MEMORY;
     }
+    if(name == "topology_vary") name = "topo_vary";
+    if(find(ALL_SWEEPS.begin(), ALL_SWEEPS.end(), name) != ALL_SWEEPS.end()) return name;
     throw invalid_argument("unknown sweep: " + value);
 }
 
@@ -265,15 +280,22 @@ void print_usage(const char* executable) {
     cout
         << "Usage: " << executable << " [options]\n\n"
         << "Measures run() runtime while independently sweeping request_cnt,\n"
-        << "fidelity_threshold, time_limit, and avg_memory. Graph generation, request\n"
+        << "fidelity_threshold, time_limit, avg_memory, tao, swap_prob, hop_count,\n"
+        << "mem_vary, topo_vary, and mem_distribution. Graph/request\n"
         << "generation, path finding, constructors, and result I/O are outside\n"
         << "the timed region.\n\n"
         << "Options:\n"
-        << "  --sweeps LIST              request_cnt,fidelity_threshold,time_limit,avg_memory\n"
+        << "  --sweeps LIST              all (default), or comma-separated sweep names\n"
         << "  --request-counts LIST      Default: 80,100,120,140,160\n"
         << "  --fidelity-thresholds LIST Default: 0.70,0.75,0.80,0.85,0.90\n"
         << "  --time-limits LIST         Default: 7,9,11,13,15,17\n"
         << "  --avg-memories LIST        Default: 4,6,8,10,12,14,16,20\n"
+        << "  --slot-durations LIST      Seconds; default: 0.001,0.002,0.003,0.004,0.005\n"
+        << "  --swap-probs LIST          Default: 0.6,0.7,0.8,0.9,0.95\n"
+        << "  --hop-counts LIST          Exact hop distances; default: 1,2,3,4,5,6\n"
+        << "  --memory-variations LIST   Offset +/- range; default: 1,2,3,4,5\n"
+        << "  --topologies LIST          0=Waxman,1=Grid,2=RGG\n"
+        << "  --memory-distributions LIST 0=uniform,1=degree,2=inverse,3=heterogeneous\n"
         << "  --algorithms LIST          ZFA_UB,ZFA,ZFA2,MyAlgo1,MyAlgo3,\n"
         << "                             EFiRAP,EFiRAP_longtime\n"
         << "  --instances N              Seeded graph instances (default: 5)\n"
@@ -315,7 +337,9 @@ Config parse_arguments(int argc, char** argv) {
         } else if(option == "--sweeps") {
             config.sweeps.clear();
             for(const string& name : split(require_value(index, option), ',')) {
-                append_unique(config.sweeps, canonical_sweep_name(name));
+                if(lowercase(name) == "all") {
+                    for(const auto& sweep : ALL_SWEEPS) append_unique(config.sweeps, sweep);
+                } else append_unique(config.sweeps, canonical_sweep_name(name));
             }
         } else if(option == "--request-counts") {
             config.request_counts = parse_number_list(require_value(index, option), option);
@@ -326,6 +350,14 @@ Config parse_arguments(int argc, char** argv) {
             config.time_limits = parse_number_list(require_value(index, option), option);
         } else if(option == "--avg-memories") {
             config.avg_memories = parse_number_list(require_value(index, option), option);
+        } else if(option == "--slot-durations" || option == "--swap-probs" ||
+                  option == "--hop-counts" || option == "--memory-variations" ||
+                  option == "--topologies" || option == "--memory-distributions") {
+            const map<string,string> keys{
+                {"--slot-durations","tao"}, {"--swap-probs","swap_prob"},
+                {"--hop-counts","hop_count"}, {"--memory-variations","mem_vary"},
+                {"--topologies","topo_vary"}, {"--memory-distributions","mem_distribution"}};
+            config.extra_values[keys.at(option)] = parse_number_list(require_value(index, option), option);
         } else if(option == "--algorithms") {
             config.algorithms.clear();
             for(const string& name : split(require_value(index, option), ',')) {
@@ -414,6 +446,23 @@ Config parse_arguments(int argc, char** argv) {
             throw invalid_argument("time limits must be integers of at least 2");
         }
     }
+    for(const auto& entry : config.extra_values) {
+        for(double value : entry.second) {
+            if(!isfinite(value)) throw invalid_argument(entry.first + " must be finite");
+            if(entry.first == "tao") {
+                if(value <= 0) throw invalid_argument("slot durations must be positive seconds");
+            } else if(entry.first == "swap_prob") {
+                if(value <= 0 || value > 1) throw invalid_argument("swap probabilities must be in (0,1]");
+            } else {
+                int maximum = entry.first == "mem_distribution" ? 3 :
+                    entry.first == "topo_vary" ? 2 :
+                    entry.first == "mem_vary" ? 9 : numeric_limits<int>::max();
+                int minimum = entry.first == "hop_count" ? 1 : 0;
+                if(value < minimum || value > maximum || floor(value) != value)
+                    throw invalid_argument("invalid index/range for " + entry.first);
+            }
+        }
+    }
     return config;
 }
 
@@ -442,17 +491,18 @@ Graph load_graph(
     const string& input_file,
     int time_limit,
     double fidelity_threshold,
-    int avg_memory = 10) {
+    int avg_memory = 10,
+    double tao = 0.002, double swap_prob = 0.9) {
     return Graph(
         input_file,
         time_limit,
-        0.9,             // swapping probability
+        swap_prob,       // swapping probability
         avg_memory,      // average memory plus fixed per-node input offsets
         0.80,            // minimum initial fidelity
         0.99,            // maximum initial fidelity
         fidelity_threshold,
         0.25, 0.75, 2.0, // decoherence A, B, n
-        0.04, 0.002,     // decoherence T, tao
+        0.04, tao,       // decoherence T, tao
         0.02702867239,   // Zmin
         0.01,            // shared graph default; runtime ZFA/ZFA2 override it
         0.001,           // time eta
@@ -464,7 +514,8 @@ Graph load_graph(
 void prepare_graph_input(
     const Config& config,
     const string& input_file,
-    int instance) {
+    int instance,
+    int mem_vary = 1, int topology = 0, int distribution = -1) {
     if(!config.regenerate_inputs) {
         ifstream existing(input_file);
         if(!existing) throw runtime_error("missing graph input: " + input_file);
@@ -473,7 +524,10 @@ void prepare_graph_input(
 
     const uint32_t seed = config.seed + (uint32_t)instance;
     const string command = config.python_command + " graph_generator.py \"" +
-        input_file + "\" 100 " + to_string(seed) + " 1";
+        input_file + "\" 100 " + to_string(seed) + " " + to_string(mem_vary) +
+        " " + vector<string>{"waxman","grid","rgg"}.at(topology) +
+        " " + (distribution < 0 ? "heterogeneous" :
+               vector<string>{"uniform","degree-proportional","inverse-degree","heterogeneous"}.at(distribution)) + " 10";
     cerr << "[main_time] " << command << '\n';
     if(system(command.c_str()) != 0) {
         throw runtime_error("graph_generator.py failed for " + input_file);
@@ -491,7 +545,9 @@ int maximum_request_count(const Config& config) {
     return max(maximum, 200);
 }
 
-vector<Workload> prepare_workloads(const Config& config) {
+vector<Workload> prepare_workloads(const Config& config,
+                                   const string& sweep = "", double value = 0,
+                                   const vector<Workload>* baseline = nullptr) {
     vector<Workload> workloads;
     workloads.reserve(config.instances);
     const int pool_size = maximum_request_count(config);
@@ -499,8 +555,22 @@ vector<Workload> prepare_workloads(const Config& config) {
     for(int instance = 0; instance < config.instances; ++instance) {
         Workload workload;
         workload.input_file = input_path_for(config, instance);
-        prepare_graph_input(config, workload.input_file, instance);
+        const bool variant = sweep == "mem_vary" || sweep == "topo_vary" || sweep == "mem_distribution";
+        if(variant) {
+            const auto dot = workload.input_file.find_last_of('.');
+            workload.input_file.insert(dot == string::npos ? workload.input_file.size() : dot,
+                                       "_" + sweep + "_" + to_string((int)value));
+        }
+        prepare_graph_input(config, workload.input_file, instance,
+                            sweep == "mem_vary" ? (int)value : 1,
+                            sweep == "topo_vary" ? (int)value : 0,
+                            sweep == "mem_distribution" ? (int)value : -1);
 
+        if(baseline && (sweep == "mem_vary" || sweep == "mem_distribution")) {
+            workload.request_pool = baseline->at(instance).request_pool;
+            workloads.push_back(move(workload));
+            continue;
+        }
         Graph request_graph = load_graph(workload.input_file, 13, 0.80);
         RequestGenerationConfig request_config;
         request_config.minimum_hops = 2;
@@ -664,6 +734,8 @@ vector<double> values_for_sweep(const Config& config, const string& sweep) {
     if(sweep == FIDELITY_THRESHOLD) return config.fidelity_thresholds;
     if(sweep == TIME_LIMIT) return config.time_limits;
     if(sweep == AVG_MEMORY) return config.avg_memories;
+    auto found = config.extra_values.find(sweep);
+    if(found != config.extra_values.end()) return found->second;
     throw invalid_argument("unknown sweep: " + sweep);
 }
 
@@ -673,6 +745,12 @@ ExperimentSettings settings_for(const string& sweep, double value) {
     else if(sweep == FIDELITY_THRESHOLD) settings.fidelity_threshold = value;
     else if(sweep == TIME_LIMIT) settings.time_limit = (int)value;
     else if(sweep == AVG_MEMORY) settings.avg_memory = (int)value;
+    else if(sweep == "tao") settings.tao = value;
+    else if(sweep == "swap_prob") settings.swap_prob = value;
+    else if(sweep == "hop_count") settings.hop_count = (int)value;
+    else if(sweep == "mem_vary") settings.mem_vary = (int)value;
+    else if(sweep == "topo_vary") settings.topo_vary = (int)value;
+    else if(sweep == "mem_distribution") settings.mem_distribution = (int)value;
     else throw invalid_argument("unknown sweep: " + sweep);
     return settings;
 }
@@ -805,7 +883,7 @@ int main(int argc, char** argv) {
                       "time_limit,instance,repetition,algorithm,epsilon,"
                       "bucket_eps,threads,run_seconds,fidelity_gain,succ_request_cnt,"
                       "actual_req_cnt,purification_rounds,oracle_calls,dual_updates,"
-                      "dp_paths,oracle_seconds,dp_seconds,peak_candidates,peak_labels,oracle_reuse,reuse_cost_growth,avg_memory\n";
+                      "dp_paths,oracle_seconds,dp_seconds,peak_candidates,peak_labels,oracle_reuse,reuse_cost_growth,avg_memory,tao,swap_prob,hop_count,mem_vary,topo_vary,mem_distribution\n";
         raw_output << fixed << setprecision(9);
 
         cout << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] algorithm columns:";
@@ -822,16 +900,39 @@ int main(int argc, char** argv) {
         for(const string& sweep : config.sweeps) {
             for(double value : values_for_sweep(config, sweep)) {
                 const ExperimentSettings settings = settings_for(sweep, value);
+                vector<Workload> variant_workloads;
+                if(sweep == "mem_vary" || sweep == "topo_vary" || sweep == "mem_distribution")
+                    variant_workloads = prepare_workloads(config, sweep, value, &workloads);
                 for(int instance = 0; instance < config.instances; ++instance) {
-                    const Workload& workload = workloads[instance];
+                    const Workload& workload = variant_workloads.empty() ? workloads[instance] : variant_workloads[instance];
                     Graph graph = load_graph(
                         workload.input_file,
                         settings.time_limit,
                         settings.fidelity_threshold,
-                        settings.avg_memory);
+                        settings.avg_memory, settings.tao, settings.swap_prob);
                     vector<SDpair> requests(
                         workload.request_pool.begin(),
                         workload.request_pool.begin() + settings.request_count);
+                    if(settings.hop_count > 0) {
+                        vector<SDpair> candidates;
+                        for(int source=0; source<graph.get_num_nodes(); ++source)
+                            for(int destination=0; destination<graph.get_num_nodes(); ++destination)
+                                if(source != destination && graph.distance(source,destination) == settings.hop_count)
+                                    candidates.emplace_back(source,destination);
+                        if(candidates.empty()) throw runtime_error("no SD pairs for hop_count=" + to_string(settings.hop_count));
+                        mt19937 generator(config.seed + (uint32_t)instance);
+                        uniform_int_distribution<int> repeat(3,6);
+                        requests.clear();
+                        while((int)requests.size() < settings.request_count) {
+                            shuffle(candidates.begin(),candidates.end(),generator);
+                            for(const auto& pair : candidates) {
+                                const int amount = min(repeat(generator), settings.request_count-(int)requests.size());
+                                requests.insert(requests.end(), amount, pair);
+                                if((int)requests.size() == settings.request_count) break;
+                            }
+                        }
+                        shuffle(requests.begin(),requests.end(),generator);
+                    }
                     const map<SDpair, vector<Path>> paths =
                         build_paths(graph, requests);
 
@@ -866,7 +967,9 @@ int main(int argc, char** argv) {
                                        << sample.oracle_seconds << ',' << sample.dp_seconds << ','
                                        << sample.peak_candidates << ',' << sample.peak_labels << ','
                                        << config.oracle_reuse << ',' << config.reuse_cost_growth << ','
-                                       << settings.avg_memory << '\n';
+                                       << settings.avg_memory << ',' << settings.tao << ',' << settings.swap_prob << ','
+                                       << settings.hop_count << ',' << settings.mem_vary << ',' << settings.topo_vary << ','
+                                       << settings.mem_distribution << '\n';
                             raw_output.flush();
                             cout << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] "
                                  << sweep << '=' << value

@@ -1,0 +1,4 @@
+topology,input_file,seed,nodes,edges,topology_scale_km,average_link_distance_km
+waxman,in_0.input,20260820,100,361,300,35.95253736638675
+waxman,in_1.input,20260821,100,361,300,35.498916219970695
+waxman,in_2.input,20260822,100,335,300,39.319693025616324

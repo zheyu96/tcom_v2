@@ -1,0 +1,10 @@
+topology,input_file,seed,nodes,edges,topology_scale_km,average_link_distance_km
+grid,round_0_topo_vary_1.input,20260820,100,180,300,24.999999999999986
+rgg,round_0_topo_vary_2.input,20260820,100,405,300,26.266748100543307
+waxman,round_0.input,20260820,100,361,300,35.95253736638675
+waxman,round_0_mem_distribution_0.input,20260820,100,361,300,35.95253736638675
+waxman,round_0_mem_distribution_1.input,20260820,100,361,300,35.95253736638675
+waxman,round_0_mem_distribution_2.input,20260820,100,361,300,35.95253736638675
+waxman,round_0_mem_distribution_3.input,20260820,100,361,300,35.95253736638675
+waxman,round_0_mem_vary_1.input,20260820,100,361,300,35.95253736638675
+waxman,round_0_topo_vary_0.input,20260820,100,361,300,35.95253736638675

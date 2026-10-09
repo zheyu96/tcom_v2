@@ -5,7 +5,7 @@
 #include <cassert>
 int main() {
     Config defaults;
-    assert(defaults.sweeps.back() == "avg_memory");
+    assert(defaults.sweeps.size() == 11);
     assert(defaults.avg_memories == vector<double>({4,6,8,10,12,14,16,20}));
     char a0[]="check", a1[]="--sweeps", a2[]="avg_memory", a3[]="--avg-memories", a4[]="4,10,20";
     char* args[]={a0,a1,a2,a3,a4};
@@ -27,6 +27,22 @@ int main() {
     Graph small=load_graph("data/input/main_smallscale_request_cnt_4_line3.input",13,.8,4);
     Graph large=load_graph("data/input/main_smallscale_request_cnt_4_line3.input",13,.8,10);
     for(int node=0;node<3;++node) assert(large.get_node_memory(node)-small.get_node_memory(node)==6);
+    assert(settings_for("tao",.003).tao == .003);
+    assert(settings_for("swap_prob",.7).swap_prob == .7);
+    assert(settings_for("hop_count",4).hop_count == 4);
+    assert(settings_for("mem_vary",3).mem_vary == 3);
+    assert(settings_for("topo_vary",2).topo_vary == 2);
+    assert(settings_for("mem_distribution",1).mem_distribution == 1);
+    assert(settings_for("path_set",1).path_set == 1);
+    auto qcast_paths = build_paths(small, vector<SDpair>{{0,2},{0,1}}, 1);
+    assert(!qcast_paths.at({0,2}).empty());
+    bool reps_rejected=false;
+    try { build_paths(small, vector<SDpair>{{0,2}}, 2); }
+    catch(const runtime_error&) { reps_rejected=true; }
+    assert(reps_rejected);
+    Graph physical = load_graph("data/input/main_smallscale_request_cnt_4_line3.input",7,.8,4,.003,.7);
+    assert(physical.get_time_limit()==7);
+    assert(abs(physical.get_node_swap_prob(0)-.7)<1e-12);
     parsed.output_directory=".codex_tmp";
     parsed.algorithms={"ZFA2"};
     vector<Sample> samples;

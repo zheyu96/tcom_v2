@@ -2,8 +2,8 @@
 //
 // The implementation is shared with main_time.cpp so both drivers use the
 // same workloads, timed region, aggregation, and output format.
-// Sweeps: request_cnt, fidelity_threshold, time_limit, and avg_memory.
-// Use --avg-memories to customize the memory-capacity sweep.
+// All ten selected figure sweeps are enabled by default; --sweeps selects a subset.
+// See runtime_experiments.md for ranges, workload policies and reproduction.
 // All approximation algorithms share EXPERIMENT_EPSILON from config.h;
 // --epsilon overrides it consistently for this benchmark.
 // Unlike the development driver, this executable refuses to run unless every requested

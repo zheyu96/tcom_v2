@@ -54,14 +54,14 @@ void WernerAlgo2::variable_initialize() {
 
     oracle_cache.clear();
     oracle_cache.resize(requests.size());
-    oracle_available.clear();
-    oracle_available.resize(requests.size());
+    entry_task.clear();
+    entry_task.resize(requests.size());
     for (int i = 0; i < (int)requests.size(); i++)
     {
         const size_t path_count =
             get_paths(requests[i].first, requests[i].second).size();
         oracle_cache[i].resize(path_count);
-        oracle_available[i].resize(path_count);
+        entry_task[i].assign(path_count, -1);
     }
 
     request_groups.clear();
@@ -121,9 +121,14 @@ void WernerAlgo2::variable_initialize() {
                 metadata.swap_log_prob[k] =
                     log(graph.get_node_swap_prob(path[k]));
             }
+            for(int i : group)
+                entry_task[i][path_index] = (int)path_metadata.size();
             path_metadata.push_back(std::move(metadata));
         }
     }
+    task_stale.assign(path_metadata.size(), 1);
+    task_lower_bound.assign(
+        path_metadata.size(), -numeric_limits<double>::infinity());
     // Purification makes this frontier heavier than ZFA's, but it is still
     // memory-bandwidth/allocator bound. More than 24 workers slowed the
     // 96-vCPU benchmark, so retain only the useful parallelism.
@@ -137,180 +142,196 @@ void WernerAlgo2::variable_initialize() {
     dirty_alpha_idxs.assign(requests.size(), 0);
 }
 
-Shape_vector WernerAlgo2::separation_oracle(){
-    const auto oracle_start = chrono::steady_clock::now();
-    ++solver_stats.oracle_calls;
-    double most_violate=1e9;
-    Shape_vector todo_shape;
-    vector<int> best_purify_rounds;
-
-    // available[i][p] records whether cache (i,p) represents the current
-    // alpha/beta values. Keeping this separate from cache.valid preserves the
-    // old behavior when a recomputation has no feasible terminal label.
-    for(auto& request_availability : oracle_available) {
-        fill(request_availability.begin(), request_availability.end(), 0);
+void WernerAlgo2::recompute_task(const PathMetadata& metadata) {
+    const Path& path = *metadata.path;
+    int T=dpp.T+5;
+    int n=path.size()+5;
+    const auto dp_start = chrono::steady_clock::now();
+    auto& stats = worker_stats[omp_get_thread_num()];
+    ++stats.dp_paths;
+    DPTable& dp_table = dp_workspaces[omp_get_thread_num()];
+    dp_table.resize(T);
+    for(int ii=0;ii<(int)dp_table.size();ii++){
+        dp_table[ii].resize(n);
+        for(int j=0;j<(int)dp_table[ii].size();j++) {
+            dp_table[ii][j].resize(n);
+            for(auto& cell : dp_table[ii][j]) cell.clear();
+        }
     }
-    auto& available = oracle_available;
 
-    struct PathTask {
-        const PathMetadata* metadata = nullptr;
-        vector<int> request_indices;
+    for(int t=1;t<=dpp.T;t++){
+        run_dp_in_t(path, dpp, t,
+                    metadata.swap_log_prob,
+                    metadata.leaf_Z, metadata.leaf_P,
+                    dp_table);
+    }
+
+    stats.dp_seconds += chrono::duration<double>(
+        chrono::steady_clock::now() - dp_start).count();
+    const int horizon = (int)dpp.T;
+    vector<vector<double>> terminal_factors(horizon + 1);
+    for(int t = 1; t <= horizon; ++t) {
+        const auto& terminal_labels =
+            dp_table[t][0][path.size() - 1];
+        auto& factors = terminal_factors[t];
+        factors.resize(terminal_labels.size());
+        for(size_t label_index = 0;
+            label_index < terminal_labels.size();
+            ++label_index) {
+            const ZLabel& label = terminal_labels[label_index];
+            factors[label_index] =
+                exp(label.Z * label.Z - label.P);
+        }
+    }
+
+    struct AlphaEvaluation {
+        double alpha_value = 0.0;
+        double best_score = 1e18;
+        bool feasible = false;
+        Shape_vector shape;
+        vector<int> purify_rounds;
     };
-    vector<PathTask> tasks;
-    tasks.reserve(path_metadata.size());
+    vector<AlphaEvaluation> evaluations;
+    evaluations.reserve(metadata.request_indices.size());
 
-    // Build a deterministic task list. A task owns one unique (SD pair, path),
-    // so its cache writes never overlap another task's writes.
-    for(const PathMetadata& metadata : path_metadata) {
-        const Path& path = *metadata.path;
-        bool path_dirty = false;
-        for(int v : path) {
-            if(dirty_nodes[v]) {
-                path_dirty = true;
+    // The DP is shared by the whole request group; every request in it is
+    // rescored so all of the task's cache entries become current.
+    for(int i : metadata.request_indices) {
+        AlphaEvaluation* evaluation = nullptr;
+        for(auto& previous : evaluations) {
+            if(previous.alpha_value == alpha[i]) {
+                evaluation = &previous;
                 break;
             }
         }
 
-        vector<int> recompute;
-        recompute.reserve(metadata.request_indices.size());
-        for(int i : metadata.request_indices) {
-            const auto& cache = oracle_cache[i][metadata.path_index];
-            if(cache.valid && !dirty_alpha_idxs[i] && !path_dirty) {
-                available[i][metadata.path_index] = 1;
-            } else {
-                recompute.push_back(i);
-            }
-        }
-        if(recompute.empty()) continue;
-
-        PathTask task;
-        task.metadata = &metadata;
-        task.request_indices = std::move(recompute);
-        tasks.push_back(std::move(task));
-    }
-
-    // Each DP workspace is local to its task. The final minimum reduction is
-    // deliberately kept serial below to retain the original tie behavior.
-    const int active_worker_count = max(
-        1, min(oracle_worker_count, (int)tasks.size()));
-    #pragma omp parallel for schedule(dynamic, 1) if(active_worker_count > 1) \
-        num_threads(active_worker_count)
-    for(int task_index = 0; task_index < (int)tasks.size(); task_index++) {
-            const PathTask& task = tasks[task_index];
-            const PathMetadata& metadata = *task.metadata;
-            const Path& path = *metadata.path;
-            int T=dpp.T+5;
-            int n=path.size()+5;
-            const auto dp_start = chrono::steady_clock::now();
-            auto& stats = worker_stats[omp_get_thread_num()];
-            ++stats.dp_paths;
-            DPTable& dp_table = dp_workspaces[omp_get_thread_num()];
-            dp_table.resize(T);
-            for(int ii=0;ii<(int)dp_table.size();ii++){
-                dp_table[ii].resize(n);
-                for(int j=0;j<(int)dp_table[ii].size();j++) {
-                    dp_table[ii][j].resize(n);
-                    for(auto& cell : dp_table[ii][j]) cell.clear();
-                }
-            }
-
-            for(int t=1;t<=dpp.T;t++){
-                run_dp_in_t(path, dpp, t,
-                            metadata.swap_log_prob,
-                            metadata.leaf_Z, metadata.leaf_P,
-                            dp_table);
-            }
-
-            stats.dp_seconds += chrono::duration<double>(
-                chrono::steady_clock::now() - dp_start).count();
-            const int horizon = (int)dpp.T;
-            vector<vector<double>> terminal_factors(horizon + 1);
+        if(evaluation == nullptr) {
+            AlphaEvaluation current;
+            current.alpha_value = alpha[i];
+            ZLabel local_best_label;
             for(int t = 1; t <= horizon; ++t) {
-                const auto& terminal_labels =
-                    dp_table[t][0][path.size() - 1];
-                auto& factors = terminal_factors[t];
-                factors.resize(terminal_labels.size());
-                for(size_t label_index = 0;
-                    label_index < terminal_labels.size();
-                    ++label_index) {
-                    const ZLabel& label = terminal_labels[label_index];
-                    factors[label_index] =
-                        exp(label.Z * label.Z - label.P);
+                auto cur_val = eval_best_J(
+                    0, path.size() - 1, t, alpha[i], dp_table,
+                    terminal_factors[t]);
+                if(cur_val.first < current.best_score) {
+                    current.best_score = cur_val.first;
+                    local_best_label = cur_val.second;
                 }
             }
-
-            struct AlphaEvaluation {
-                double alpha_value = 0.0;
-                double best_score = 1e18;
-                bool feasible = false;
-                Shape_vector shape;
-                vector<int> purify_rounds;
-            };
-            vector<AlphaEvaluation> evaluations;
-            evaluations.reserve(task.request_indices.size());
-
-            for(int i : task.request_indices) {
-                AlphaEvaluation* evaluation = nullptr;
-                for(auto& previous : evaluations) {
-                    if(previous.alpha_value == alpha[i]) {
-                        evaluation = &previous;
-                        break;
-                    }
-                }
-
-                if(evaluation == nullptr) {
-                    AlphaEvaluation current;
-                    current.alpha_value = alpha[i];
-                    ZLabel local_best_label;
-                    for(int t = 1; t <= horizon; ++t) {
-                        auto cur_val = eval_best_J(
-                            0, path.size() - 1, t, alpha[i], dp_table,
-                            terminal_factors[t]);
-                        if(cur_val.first < current.best_score) {
-                            current.best_score = cur_val.first;
-                            local_best_label = cur_val.second;
-                        }
-                    }
-                    if(current.best_score < 1e18) {
-                        current.shape = backtrack_shape(
-                            local_best_label, path,
-                            current.purify_rounds, dp_table);
-                        current.feasible = true;
-                    }
-                    evaluations.push_back(std::move(current));
-                    evaluation = &evaluations.back();
-                }
-
-                if(evaluation->feasible) {
-                    auto& cache =
-                        oracle_cache[i][metadata.path_index];
-                    cache.shape = evaluation->shape;
-                    cache.purify_rounds = evaluation->purify_rounds;
-                    cache.best_score = evaluation->best_score;
-                    cache.valid = true;
-                    available[i][metadata.path_index] = 1;
-                }
+            if(current.best_score < 1e18) {
+                current.shape = backtrack_shape(
+                    local_best_label, path,
+                    current.purify_rounds, dp_table);
+                current.feasible = true;
             }
-    }
+            evaluations.push_back(std::move(current));
+            evaluation = &evaluations.back();
+        }
 
-    // Preserve the original request-major/path-minor reduction order. This is
-    // important because strict '<' means the first equal-score shape wins.
-    for(int i = 0; i < (int)requests.size(); i++) {
-        const vector<Path>& cur_paths = get_paths(
-            requests[i].first, requests[i].second);
-        for(int p = 0; p < (int)cur_paths.size(); p++) {
-            if(!available[i][p]) continue;
-            const auto& cache = oracle_cache[i][p];
-            if(cache.best_score < most_violate) {
-                most_violate = cache.best_score;
-                todo_shape = cache.shape;
-                best_purify_rounds = cache.purify_rounds;
-            }
+        auto& cache = oracle_cache[i][metadata.path_index];
+        if(evaluation->feasible) {
+            cache.shape = evaluation->shape;
+            cache.purify_rounds = evaluation->purify_rounds;
+            cache.best_score = evaluation->best_score;
+            cache.valid = true;
+        } else {
+            cache = OracleCache{};
         }
     }
+}
 
+Shape_vector WernerAlgo2::separation_oracle(){
+    const auto oracle_start = chrono::steady_clock::now();
+    ++solver_stats.oracle_calls;
+    double most_violate=1e9;
+    int best_request = -1, best_path = -1;
+
+    // A path becomes stale when a node on it or the alpha of one of its
+    // requests changed. Staleness persists until the path is recomputed.
+    for(size_t m = 0; m < path_metadata.size(); ++m) {
+        if(task_stale[m]) continue;
+        const PathMetadata& metadata = path_metadata[m];
+        bool stale = false;
+        for(int v : *metadata.path) {
+            if(dirty_nodes[v]) { stale = true; break; }
+        }
+        for(int i : metadata.request_indices) {
+            if(stale) break;
+            if(dirty_alpha_idxs[i]) stale = true;
+        }
+        if(stale) task_stale[m] = 1;
+    }
     fill(dirty_nodes.begin(), dirty_nodes.end(), 0);
     fill(dirty_alpha_idxs.begin(), dirty_alpha_idxs.end(), 0);
+
+    // alpha and beta only grow, so a stale path's previous score is a lower
+    // bound on its current score (up to Z/P bucketing). Recompute stale paths
+    // in lower-bound order until no stale bound reaches the best current
+    // score. Bounds equal to the best are recomputed too, so the original
+    // request-major/path-minor tie order is retained.
+    vector<int> batch;
+    while(true) {
+        most_violate = 1e9;
+        best_request = best_path = -1;
+        for(int i = 0; i < (int)requests.size(); i++) {
+            for(int p = 0; p < (int)entry_task[i].size(); p++) {
+                const int m = entry_task[i][p];
+                if(m < 0 || task_stale[m]) continue;
+                const auto& cache = oracle_cache[i][p];
+                if(cache.valid && cache.best_score < most_violate) {
+                    most_violate = cache.best_score;
+                    best_request = i;
+                    best_path = p;
+                }
+            }
+        }
+
+        batch.clear();
+        for(int m = 0; m < (int)path_metadata.size(); ++m) {
+            if(task_stale[m] && task_lower_bound[m] <= most_violate)
+                batch.push_back(m);
+        }
+        if(batch.empty()) break;
+        sort(batch.begin(), batch.end(), [&](int left, int right) {
+            if(task_lower_bound[left] != task_lower_bound[right])
+                return task_lower_bound[left] < task_lower_bound[right];
+            return left < right;
+        });
+        // Never-computed paths have no bound and must all run. Otherwise
+        // take one path per worker, most promising first.
+        size_t take = 0;
+        while(take < batch.size() &&
+              isinf(task_lower_bound[batch[take]])) ++take;
+        if(take == 0)
+            take = min(batch.size(), (size_t)oracle_worker_count);
+        batch.resize(take);
+
+        const int active_worker_count = max(
+            1, min(oracle_worker_count, (int)batch.size()));
+        #pragma omp parallel for schedule(dynamic, 1) if(active_worker_count > 1) \
+            num_threads(active_worker_count)
+        for(int b = 0; b < (int)batch.size(); b++)
+            recompute_task(path_metadata[batch[b]]);
+
+        for(int m : batch) {
+            const PathMetadata& metadata = path_metadata[m];
+            double bound = numeric_limits<double>::infinity();
+            for(int i : metadata.request_indices) {
+                const auto& cache = oracle_cache[i][metadata.path_index];
+                if(cache.valid) bound = min(bound, cache.best_score);
+            }
+            task_lower_bound[m] = bound;
+            task_stale[m] = 0;
+        }
+    }
+
+    Shape_vector todo_shape;
+    vector<int> best_purify_rounds;
+    if(best_request >= 0) {
+        const auto& cache = oracle_cache[best_request][best_path];
+        todo_shape = cache.shape;
+        best_purify_rounds = cache.purify_rounds;
+    }
 
     if(!todo_shape.empty()){
         auto it = shape_purify_map.find(todo_shape);
