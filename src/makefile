@@ -112,12 +112,12 @@ runtime: runtime.cpp $(dependency) $(algorithm2) $(routing)
 runtime_compare: runtime_compare.cpp $(workload) $(dependency) $(algorithm_runtime_compare) $(routing_runtime_compare)
 	g++ -fopenmp $(gcc_flag) runtime_compare.cpp $(workload) $(dependency) $(algorithm_runtime_compare) $(routing_runtime_compare) $(gurobi_flag) -o runtime_compare
 
-# Dedicated runtime-only experiment for request_cnt, fidelity_threshold, and
-# time_limit. The executable writes raw/summary CSV and chart-compatible ANS.
+# Dedicated runtime-only experiment for request_cnt, fidelity_threshold,
+# time_limit, and avg_memory. The executable writes raw/summary CSV and chart-compatible ANS.
 main_time: main_time.cpp $(workload) $(dependency) $(algorithm_main_time) $(routing_runtime_compare)
 	g++ -fopenmp $(gcc_flag) main_time.cpp $(workload) $(dependency) $(algorithm_main_time) $(routing_runtime_compare) $(gurobi_flag) -o main_time
 
-# Publication runtime benchmark.  It writes the three Greedy_*_runtime.ans
+# Publication runtime benchmark.  It writes the four Greedy_*_runtime.ans
 # files only after all requested algorithms finish.  Dedicated EFiRAP objects
 # prevent a previous non-Gurobi build from being reused accidentally.
 ifeq ($(strip $(gurobi_flag)),)

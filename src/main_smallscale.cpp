@@ -25,7 +25,7 @@ constexpr int DEFAULT_MEMORY = 4;
 constexpr double DEFAULT_FIDELITY_THRESHOLD = 0.80;
 constexpr double DEFAULT_SLOT_DURATION = 0.002;
 constexpr double DEFAULT_SWAP_PROBABILITY = 0.90;
-constexpr double MAIN_STYLE_EPSILON = EXPERIMENT_EPSILON;
+double MAIN_STYLE_EPSILON = EXPERIMENT_EPSILON;
 constexpr double MAIN_STYLE_GRAPH_BUCKET_EPS = 0.01;
 constexpr double MAIN_STYLE_WPFA_BUCKET_EPS = 0.001;
 constexpr size_t WPFA_SMALL_CANDIDATE_LIMIT = 3;
@@ -52,6 +52,7 @@ const vector<string> METRIC_NAMES = {
 
 struct Options {
     string selected_sweep;
+    double epsilon = EXPERIMENT_EPSILON;
 };
 
 struct TopologySpec {
@@ -98,6 +99,7 @@ void print_help(const char* executable) {
     cout << "Usage: " << executable << " [options]\n"
          << "  --sweep NAME  run only request_cnt, fidelity_threshold, tao, "
             "swap_prob, time_limit, or avg_memory\n"
+         << "  --epsilon X   override WPFA epsilon (default: shared config)\n"
          << "  --help        show this message\n";
 }
 
@@ -113,6 +115,17 @@ Options parse_options(int argc, char** argv) {
         if(option == "--help") {
             print_help(argv[0]);
             exit(0);
+        }
+        if(option == "--epsilon") {
+            if(index + 1 >= argc) throw invalid_argument("missing value after --epsilon");
+            const string value = argv[++index];
+            size_t consumed = 0;
+            options.epsilon = stod(value, &consumed);
+            if(consumed != value.size() || !isfinite(options.epsilon) ||
+               options.epsilon <= 0 || options.epsilon >= 1) {
+                throw invalid_argument("epsilon must be between zero and one");
+            }
+            continue;
         }
         if(option == "--sweep") {
             if(index + 1 >= argc) {
@@ -155,7 +168,9 @@ const vector<double>& sweep_values(const string& sweep) {
         {"fidelity_threshold", {0.75, 0.80, 0.85, 0.90, 0.95}},
         {"tao", {0.0015, 0.0020, 0.0025, 0.0030, 0.0035}},
         {"swap_prob", {0.70, 0.75, 0.80, 0.85, 0.90}},
-        {"time_limit", {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
+        // 4--12 ms at 2 ms/slot, including the existing five-slot baseline.
+        // Keep exhaustive schedule enumeration tractable on both topologies.
+        {"time_limit", {2, 3, 4, 5, 6}},
         {"avg_memory", {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
     };
     return values.at(sweep);
@@ -729,13 +744,16 @@ void print_trial(const TrialResult& result) {
 int main(int argc, char** argv) {
     try {
         const Options options = parse_options(argc, argv);
+        MAIN_STYLE_EPSILON = options.epsilon;
+        const string output_suffix = options.selected_sweep.empty()
+            ? "" : "_" + options.selected_sweep;
         const string data_directory = locate_data_directory();
         const string input_directory = data_directory + "/input";
         const string answer_directory = data_directory + "/ans";
         const string results_path =
-            answer_directory + "/main_smallscale_results.csv";
+            answer_directory + "/main_smallscale" + output_suffix + "_results.csv";
         const string summary_path =
-            answer_directory + "/main_smallscale_summary.csv";
+            answer_directory + "/main_smallscale" + output_suffix + "_summary.csv";
 
         ofstream results_output(results_path);
         if(!results_output) {

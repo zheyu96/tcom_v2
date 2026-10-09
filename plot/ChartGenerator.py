@@ -5,12 +5,13 @@ import os
 import math
 import sys
 import csv
+import argparse
 import numpy as np
 
 import matplotlib
 matplotlib.use("Agg")  # 無頭後端（WSL/遠端/CI）安全
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MultipleLocator, FuncFormatter
+from matplotlib.ticker import MultipleLocator, FuncFormatter, FixedLocator
 from matplotlib import font_manager as fm
 
 
@@ -112,10 +113,33 @@ class ChartGenerator:
     用法: ChartGenerator(dataName, Xkey, Ykey, label_every=None)
     """
 
-    _FONT_SIZE_BASE = 30
+    # Outer export margin in inches and label spacing in points.
+    _SHARED_LEGEND_HANDLES = {}
+    _SMALL_SCALE_LEGEND_HANDLES = {}
+    _BAR_LEGEND_HANDLES = {}
+    _EXPORT_PAD_INCHES = 0.12
+    _AXIS_LABEL_PAD = 6
+    _TICK_LABEL_PAD = 5
+
+    # Font sizes in points; edit bar and line charts independently.
+    # Categorical X tick overrides accommodate longer, multiline labels.
+    _BAR_FONT_SIZES = {
+        "axis_label": 32,
+        "x_tick": 20,
+        "y_tick": 32,
+        "legend": 20,
+        "x_tick_overrides": {},
+    }
+    _LINE_FONT_SIZES = {
+        "axis_label": 40,
+        "x_tick": 40,
+        "y_tick": 40,
+        "legend": 20,
+        "x_tick_overrides": {},
+    }
 
     _RIGHT_TOP  = (0.55, 0.83)
-    _LEFT_TOP   = (0.45, 0.83)
+    _LEFT_TOP   = (0.48, 0.83)
     _RIGHT_DOWN = (0.55, 0.13)
     _LEFT_DOWN  = (0.40, 0.13)
 
@@ -172,14 +196,17 @@ class ChartGenerator:
         },
     }
 
+    # Tuple: (minimum, maximum, minor spacing, label every N ticks).
+    # List: explicit labeled ticks, with first/last values as axis limits.
+    # Example: [50, 65, 80, 95]. _CUSTOM_Y_TICKS can override the labels.
     _Y_INTERVALS = {
         'fidelity_gain':{
-            'request_cnt': (20, 125, 5, 4),
-            'tao': (0, 100, 5, 6), 'time_limit': (20, 80, 5, 4),
-            'avg_memory': (20, 80, 5, 4), 'mem_vary': (30,90,5,6),
-            'topo_vary': (0,90,5,4), 'mem_distribution': (0,100,5,4),
-            'path_set': (0,90,5,4),
-            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 100, 5, 4),
+            'request_cnt': (20, 100, 5, 4),
+            'tao': (0, 80, 5, 4), 'time_limit': (30, 70, 5, 2),
+            'avg_memory': (20, 70, 5, 2), 'mem_vary': (30,70,5,2),
+            'topo_vary': (0,75,5,5), 'mem_distribution': (0,75,5,5),
+            'path_set': (0,75,5,5),
+            'min_fidelity': (23, 63, 5, 1), 'fidelity_threshold': (0, 80, 5, 4),
             'swap_prob': (10, 80, 5, 4), 'entangle_time': "auto",
             'hop_count':(10,90,5,3),
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
@@ -206,21 +233,21 @@ class ChartGenerator:
             'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'actual_req_cnt':{
-            'request_cnt': (40,165,5,8),
-            'tao': (0,130,5,6), 'time_limit': (50,110,5,5),
-            'avg_memory': (30,120,5,6), 'mem_vary': (40,120,5,4),
-            'topo_vary': (0,150,5,10), 'mem_distribution': (0,150,5,4),
-            'path_set': (0,125,5,5),
-            'min_fidelity': "auto", 'fidelity_threshold': (0,140,5,4),
+            'request_cnt': (40,140,5,4),
+            'tao': [0,25,50,75,99], 'time_limit': [50,65,80,95],
+            'avg_memory': (40,100,5,4), 'mem_vary': [40,55,80,95],
+            'topo_vary': (0,105,5,5), 'mem_distribution': (0,105,5,5),
+            'path_set': (0,105,5,5),
+            'min_fidelity': "auto", 'fidelity_threshold': (0,105,5,7),
             'swap_prob': (50,100,5,5), 'hop_count': "auto",
             'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'runtime':{
-            'request_cnt': "auto", 'tao': "auto", 'time_limit': "auto",
+            'request_cnt': (0,5,1,1), 'tao': "auto", 'time_limit': (0,5,1,1),
             'avg_memory': "auto", 'mem_vary': "auto", 'topo_vary': "auto",
             'mem_distribution': "auto", 'path_set': "auto",
-            'min_fidelity': "auto", 'fidelity_threshold': "auto",
+            'min_fidelity': "auto", 'fidelity_threshold': (0,5,1,1),
             'swap_prob': "auto", 'hop_count': "auto", 'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
@@ -235,10 +262,10 @@ class ChartGenerator:
     _SMALL_SCALE_Y_INTERVALS = {
         'fidelity_gain': {
             'request_cnt': (1, 5, 0.5, 2),
-            'fidelity_threshold': (1, 4.0, 0.25, 2),
-            'tao': (2.5, 3.5, 0.25, 1),
-            'swap_prob': (2.75, 3.5, 0.25, 1),
-            'time_limit': "auto",
+            'fidelity_threshold': (1, 4.0, 0.5, 2),
+            'tao': (2, 4, 0.25, 4),
+            'swap_prob': (2, 4, 0.25, 4),
+            'time_limit': (1,4,0.25,4),
             'avg_memory': (1, 4.0, 0.5, 2),
         },
         'succ_request_cnt': {
@@ -267,16 +294,31 @@ class ChartGenerator:
         },
     }
 
+    # Optional major Y ticks, keyed by dataset -> Y key -> X key.
+    # Missing entries or None keep the existing tick behavior unchanged.
+    # Values use ORIGINAL data units, before the automatic 10^n scaling.
+    # Only labeled major ticks are replaced; ranges and minor ticks stay as set.
+    # Each list must be strictly increasing and within the configured Y range.
+    _CUSTOM_Y_TICKS = {
+        "Greedy": {
+            # "fidelity_gain": {"request_cnt": [20, 40, 75, 100, 140]},
+        },
+        "SmallScale": {
+            # "fidelity_gain": {"request_cnt": [1, 2, 3, 4, 5]},
+            # "runtime": {"request_cnt": [0, 0.002, 0.005, 0.010]},
+        },
+    }
+
     _AXIS_NAME = {
         "request_cnt": r"$\#$Requests", "time_limit": "$| T |$",
-        "avg_memory": "Average Memory Limit", "mem_vary": "Memory Variation",
+        "avg_memory": "Average Mem. Capacity", "mem_vary": "Memory Variation",
         "topo_vary": "Topology Model", "topology_vary": "Topology Model",
         "mem_distribution": "Memory Distribution",
         "path_set": "Path Set",
         "tao": r"$\it{\delta}$",
-        "swap_prob": "Swapping Probability", "fidelity_gain": "Exp. Werner Param. Sum",
+        "swap_prob": "Swapping Probability", "fidelity_gain": "Exp. W. Param. Sum",
         "succ_request_cnt": r"$\#$Exp. Accepted Requests", "pure_fidelity": "Average Final Fidelity",
-        "actual_req_cnt": r"$\#$Accpected Requests",
+        "actual_req_cnt": r"$\#$Acc. Requests",
         "runtime": "Runtime (s)",
         "fidelity_threshold": "Fidelity Threshold", "min_fidelity": "Minimum Initial Fidelity",
         "entangle_time": "Entangling Time", "entangle_prob": "Entangling Probability",
@@ -326,9 +368,26 @@ class ChartGenerator:
     ]
     _HATCHES = ['', '//', '\\\\', 'xx', '..', '++', 'oo', '--', '**']
 
+    # Use algorithm names rather than data-column positions for bar styles.
+    # Both the plot and its shared legend use these exact patch properties.
+    _BAR_STYLES = {
+        "UB": {"facecolor": "#CDB4DB", "hatch": ""},
+        "OPT": {"facecolor": "#CDB4DB", "hatch": ""},
+        "WPFA-noPurify": {"facecolor": "#FFADAD", "hatch": "//"},
+        "WPFA": {"facecolor": "#A0C4FF", "hatch": "\\\\"},
+        "FNPR": {"facecolor": "#CAFFBF", "hatch": "xx"},
+        "FLTO": {"facecolor": "#BDB2FF", "hatch": ".."},
+        "EFiRAP": {"facecolor": "#FFC6FF", "hatch": "++"},
+        "EFiRAP-long": {"facecolor": "#9BF6FF", "hatch": "oo"},
+    }
+    _BAR_EDGE_STYLE = {"edgecolor": "black", "linewidth": 0.8}
+
     _SKIP_ALGOS = ["Nesting", "Linear", "ASAP"]
 
-    def __init__(self, dataName: str, x_key: str, y_key: str, label_every: int|None = None):
+    def __init__(self, dataName: str, x_key: str, y_key: str, label_every: int|None = None,
+                 legend_mode="separate", legend_columns=1):
+        if legend_mode not in ("separate", "inline") or legend_columns < 1:
+            raise ValueError("Invalid legend mode or column count")
         path = os.path.join('..', 'data', 'ans', dataName)
         runtime_raw_path = os.path.join(
             '..', 'data', 'ans', 'main_runtime_raw.csv'
@@ -430,9 +489,13 @@ class ChartGenerator:
 
             y = np.array(y_vals).reshape(num_rows, num_algos).T.tolist()
 
+        is_categorical_bar = x_key in (
+            "topo_vary", "topology_vary", "mem_distribution", "path_set"
+        )
+
         def should_draw_algorithm(i: int) -> bool:
             name = self._ALGO_NAMES[i]
-            if name in self._SKIP_ALGOS:
+            if name in self._SKIP_ALGOS or (is_categorical_bar and name == "UB"):
                 return False
             if x_key in self._ONLY_WERNER_X and name != "G-Werner":
                 return False
@@ -528,12 +591,14 @@ class ChartGenerator:
                     min_data = min(min_data, y[i][j])
 
         # 畫圖
-        fig, ax1 = plt.subplots(figsize=(6.8, 5.4), dpi=600, constrained_layout=True)
-        ax1.tick_params(direction="in", bottom=True, top=True, left=True, right=True, pad=10)
+        if is_categorical_bar:
+            # Fixed canvas and axes bounds keep all categorical panels aligned.
+            fig = plt.figure(figsize=(6.8, 5.4), dpi=600)
+            ax1 = fig.add_axes([0.25, 0.30, 0.72, 0.66])
+        else:
+            fig, ax1 = plt.subplots(figsize=(6.8, 5.4), dpi=600, constrained_layout=True)
+        ax1.tick_params(direction="in", bottom=True, top=True, left=True, right=True, pad=self._TICK_LABEL_PAD)
 
-        is_categorical_bar = x_key in (
-            "topo_vary", "topology_vary", "mem_distribution", "path_set"
-        )
         x_positions = np.arange(len(x_labels), dtype=float)
         categorical_bar_count = len([
             i for i in self._DRAW_ORDER
@@ -548,19 +613,12 @@ class ChartGenerator:
             if i >= num_algos:
                 continue
 
-            # [修改] 若在跳過列表中，無論何種 X 軸都不畫
-            if self._ALGO_NAMES[i] in self._SKIP_ALGOS:
-                continue
-
-            if x_key in self._ONLY_WERNER_X and self._ALGO_NAMES[i] != "G-Werner":
-                continue
-            
-            # 針對 succ_request_cnt / actual_req_cnt，隱藏所有結尾是 UB 的項目
-            if y_key in ("succ_request_cnt", "actual_req_cnt", "runtime") and self._ALGO_NAMES[i].endswith("UB"):
+            if not should_draw_algorithm(i):
                 continue
 
             if is_categorical_bar:
-                group_width = 0.82
+                # Equal physical bar widths for three- and four-category panels.
+                group_width = 0.82 * len(x_labels) / 4.0
                 bar_width = group_width / categorical_bar_count
                 offset = (
                     categorical_bar_index - (categorical_bar_count - 1) / 2.0
@@ -568,9 +626,9 @@ class ChartGenerator:
                 ax1.bar(
                     x_positions + offset, y[i],
                     width=bar_width * 0.9,
-                    color=self._PASTEL_BAR_COLORS[i],
-                    edgecolor="black", linewidth=0.8,
-                    hatch=self._HATCHES[i], zorder=2,
+                    **self._BAR_STYLES[self._ALGO_NAMES[i]],
+                    **self._BAR_EDGE_STYLE,
+                    zorder=2, label=self._ALGO_NAMES[i],
                 )
                 categorical_bar_index += 1
             else:
@@ -582,43 +640,41 @@ class ChartGenerator:
                     markersize=self._MARKER_SIZES[i],
                     markerfacecolor='None',
                     markeredgewidth=self._MARKER_EDGE_WIDTHS[i],
-                    zorder=self._PLOT_ZORDERS[i],
+                    zorder=self._PLOT_ZORDERS[i], label=self._ALGO_NAMES[i],
                 )
             plotted.append(i)
 
-        legend_names = []
-        for draw_idx in range(min(10, num_algos)):
-            if draw_idx >= len(self._DRAW_ORDER): break
-            i = self._DRAW_ORDER[draw_idx]
-            if i >= num_algos: continue
-
-            # [修改] Legend 也要過濾掉
-            if self._ALGO_NAMES[i] in self._SKIP_ALGOS:
-                continue
-
-            if x_key in self._ONLY_WERNER_X and self._ALGO_NAMES[i] != "G-Werner":
-                continue
-            
-            if y_key in ("succ_request_cnt", "actual_req_cnt", "runtime") and self._ALGO_NAMES[i].endswith("UB"):
-                continue
-
-            legend_names.append(self._ALGO_NAMES[i])
-
-        fontsize = self._FONT_SIZE_BASE
-        bbox_pos = self._BBOX_POS[y_key].get(x_key, (0.5, 0.5)) 
-        
-        plt.legend(
-            legend_names, loc='center', bbox_to_anchor=bbox_pos,
-            prop={"size": fontsize-10, "family": "Times New Roman"},
+        legend_handles, legend_names = ax1.get_legend_handles_labels()
+        font_sizes = self._BAR_FONT_SIZES if is_categorical_bar else self._LINE_FONT_SIZES
+        if is_small_scale and x_key == "time_limit":
+            # Fit the long vertical objective label in the existing canvas.
+            font_sizes = {**font_sizes, "axis_label": 32}
+        legend_options = dict(
+            prop={"size": font_sizes["legend"], "family": "Times New Roman"},
             frameon=False, handletextpad=0.5, handlelength=1,
-            labelspacing=0.2, columnspacing=0.6, ncol=2, facecolor='None',
+            labelspacing=0.2, columnspacing=0.6,
+            ncol=legend_columns, facecolor='None',
         )
+        if legend_mode == "inline":
+            bbox_pos = self._BBOX_POS[y_key].get(x_key, (0.5, 0.5))
+            ax1.legend(legend_handles, legend_names, loc='center',
+                       bbox_to_anchor=bbox_pos, **legend_options)
 
-        # 自動 Y 軸刻度
         if is_small_scale:
             cfg = self._SMALL_SCALE_Y_INTERVALS.get(y_key, {}).get(x_key, "auto")
         else:
             cfg = self._Y_INTERVALS[y_key].get(x_key, "auto")
+        # Lists specify explicit ticks; tuples retain the legacy range format.
+        interval_ticks = cfg if isinstance(cfg, list) else None
+        if interval_ticks is not None:
+            if len(interval_ticks) < 2:
+                raise ValueError("Y interval tick lists require at least two values")
+            self._scaled_custom_y_ticks(
+                interval_ticks, 1.0, float(interval_ticks[0]),
+                float(interval_ticks[-1]), f"{dataName}: Y interval list",
+            )
+            cfg = (interval_ticks[0], interval_ticks[-1],
+                   self._nice_step((interval_ticks[-1] - interval_ticks[0]) / 6), 1)
         manual_y_range = cfg != "auto"
         if cfg == "auto":
             range_min, range_max = min_data, max_data
@@ -664,11 +720,13 @@ class ChartGenerator:
         if is_small_scale and x_key == "tao":
             Xlabel_text = "Slot Duration (ms)"
         elif is_small_scale and x_key == "avg_memory":
-            Xlabel_text = "Average Memory Limit"
+            Xlabel_text = "Average Mem. Capacity"
         else:
             Xpow_disp_unit = " s" if x_key in ("tao", "entangle_time") else ""
             Xlabel_text = self._AXIS_NAME.get(x_key, x_key) + self._gen_power_suffix(Xpow, Xpow_disp_unit)
         Ylabel_text = self._AXIS_NAME.get(y_key, y_key) + self._gen_power_suffix(Ypow, "")
+        if y_key == "actual_req_cnt":
+            Ylabel_text = "Acc. Requests(x10)" + self._gen_power_suffix(Ypow, "")
 
         major_step = Yinterval * label_step_factor
         minor_step = Yinterval
@@ -681,23 +739,31 @@ class ChartGenerator:
         ax1.set_ylim(Ystart, Yend)
         ax1.yaxis.set_major_locator(MultipleLocator(major_step))
         ax1.yaxis.set_minor_locator(MultipleLocator(minor_step))
-        ax1.tick_params(axis='y', which='major', labelsize=self._FONT_SIZE_BASE)
+        dataset_name = "SmallScale" if is_small_scale else "Greedy"
+        custom_ticks = self._CUSTOM_Y_TICKS.get(dataset_name, {}).get(
+            y_key, {}
+        ).get(x_key)
+        if custom_ticks is None:
+            custom_ticks = interval_ticks
+        if custom_ticks is not None:
+            ax1.yaxis.set_major_locator(FixedLocator(self._scaled_custom_y_ticks(
+                custom_ticks, Ydiv, Ystart, Yend,
+                f"{dataset_name}/{y_key}/{x_key}",
+            )))
+        ax1.tick_params(axis='y', which='major', labelsize=font_sizes["y_tick"])
         ax1.tick_params(axis='y', which='minor', length=4, labelsize=0)
 
         def _fmt_y(val, pos):
+            if y_key == "actual_req_cnt":
+                return f"{val / 10:g}"
             if abs(val) >= 100 or abs(val) == int(val): return f"{val:.0f}"
             elif abs(val) >= 10: return f"{val:.1f}"
             else: return f"{val:.2f}"
         ax1.yaxis.set_major_formatter(FuncFormatter(_fmt_y))
 
-        if x_key == "mem_distribution":
-            x_tick_fontsize = self._FONT_SIZE_BASE - 10
-        elif x_key == "path_set":
-            x_tick_fontsize = self._FONT_SIZE_BASE - 4
-        elif is_small_scale:
-            x_tick_fontsize = self._FONT_SIZE_BASE
-        else:
-            x_tick_fontsize = self._FONT_SIZE_BASE + 4
+        x_tick_fontsize = font_sizes["x_tick_overrides"].get(
+            x_key, font_sizes["x_tick"]
+        )
 
         tick_indices = list(range(len(x_labels)))
         if is_small_scale and len(tick_indices) > 5:
@@ -712,22 +778,102 @@ class ChartGenerator:
         )
         if is_categorical_bar:
             ax1.set_xlim(-0.5, len(x_labels) - 0.5)
-        plt.ylabel(Ylabel_text, fontsize=self._FONT_SIZE_BASE+4)
-        plt.xlabel(Xlabel_text, fontsize=self._FONT_SIZE_BASE+4, labelpad=100)
-        ax1.yaxis.set_label_coords(-0.16, 0.45)
-        if x_key == "mem_distribution":
-            ax1.xaxis.set_label_coords(0.5, -0.31)
-        elif x_key == "path_set":
-            ax1.xaxis.set_label_coords(0.5, -0.29)
-        else:
-            ax1.xaxis.set_label_coords(0.45, -0.2)
+        ax1.set_ylabel(
+            Ylabel_text, fontsize=font_sizes["axis_label"],
+            labelpad=self._AXIS_LABEL_PAD,
+        )
+        ax1.set_xlabel(
+            Xlabel_text, fontsize=font_sizes["axis_label"],
+            labelpad=self._AXIS_LABEL_PAD,
+        )
 
         out_stem = os.path.splitext(os.path.basename(path))[0].replace('#', '')
         pdf_dir = os.path.join('..', 'data', 'pdf')
         os.makedirs(pdf_dir, exist_ok=True)
-        plt.savefig(os.path.join(pdf_dir, f'NWFA_{out_stem}.eps'), bbox_inches="tight", pad_inches=0.3)
-        plt.savefig(os.path.join(pdf_dir, f'{out_stem}.png'),      bbox_inches="tight", pad_inches=0.3)
-        plt.close()
+        # Resolve layout once, then keep the same axes positions for both
+        # renderers. Otherwise EPS/PNG font metrics can move the labels during
+        # the tight-bounding-box export and clip text at the bottom edge.
+        fig.canvas.draw()
+        fig.set_layout_engine(None)
+        export_bounds = fig.bbox_inches if is_categorical_bar else "tight"
+        plt.savefig(os.path.join(pdf_dir, f'NWFA_{out_stem}.eps'), bbox_inches=export_bounds, pad_inches=self._EXPORT_PAD_INCHES)
+        plt.savefig(os.path.join(pdf_dir, f'{out_stem}.png'),      bbox_inches=export_bounds, pad_inches=self._EXPORT_PAD_INCHES)
+        plt.close(fig)
+        if legend_mode == "separate":
+            legend_cache = (
+                self._BAR_LEGEND_HANDLES if is_categorical_bar
+                else self._SMALL_SCALE_LEGEND_HANDLES if is_small_scale
+                else self._SHARED_LEGEND_HANDLES
+            )
+            for handle, name in zip(legend_handles, legend_names):
+                if is_categorical_bar and name == "UB":
+                    continue
+                legend_cache.setdefault(name, handle)
+
+    @classmethod
+    def export_shared_legend(cls, legend_columns=1):
+        """Export separate legends for ordinary, SmallScale and bar charts."""
+        cls._export_legend(cls._SHARED_LEGEND_HANDLES, "legend",
+                           cls._LINE_FONT_SIZES["legend"], legend_columns)
+        small_handles = {
+            name: cls._SMALL_SCALE_LEGEND_HANDLES[name]
+            for name in ("WPFA", "OPT")
+            if name in cls._SMALL_SCALE_LEGEND_HANDLES
+        }
+        # Preserve the original compact eight-entry legend as a separate asset.
+        compact_handles = dict(cls._SHARED_LEGEND_HANDLES)
+        if "OPT" in cls._SMALL_SCALE_LEGEND_HANDLES:
+            compact_handles["OPT"] = cls._SMALL_SCALE_LEGEND_HANDLES["OPT"]
+        cls._export_legend(compact_handles, "legend_small",
+                           cls._LINE_FONT_SIZES["legend"], 4)
+        cls._export_legend(small_handles, "legend_small_scale",
+                           cls._LINE_FONT_SIZES["legend"], 2)
+        cls._export_legend(cls._BAR_LEGEND_HANDLES, "bar_chart_legend",
+                           cls._BAR_FONT_SIZES["legend"],
+                           max(1, len(cls._BAR_LEGEND_HANDLES)))
+
+    @classmethod
+    def _export_legend(cls, handles, out_stem, font_size, legend_columns):
+        if not handles:
+            return
+        pdf_dir = os.path.join('..', 'data', 'pdf')
+        os.makedirs(pdf_dir, exist_ok=True)
+        legend_fig = plt.figure(figsize=(6.8, 1.0), dpi=600)
+        try:
+            legend = legend_fig.legend(
+                list(handles.values()),
+                list(handles), loc="center",
+                prop={"size": font_size, "family": "Times New Roman"},
+                frameon=False, handletextpad=0.5, handlelength=1,
+                labelspacing=0.2, columnspacing=0.6, ncol=legend_columns,
+            )
+            legend_fig.canvas.draw()
+            bounds = legend.get_window_extent().transformed(
+                legend_fig.dpi_scale_trans.inverted()
+            )
+            for extension in ("png", "eps"):
+                legend_fig.savefig(
+                    os.path.join(pdf_dir, f"{out_stem}.{extension}"),
+                    bbox_inches=bounds, pad_inches=cls._EXPORT_PAD_INCHES,
+                    transparent=True,
+                )
+        finally:
+            plt.close(legend_fig)
+
+    @staticmethod
+    def _scaled_custom_y_ticks(values, divisor, lower, upper, context):
+        try:
+            ticks = [float(value) / divisor for value in values]
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(f"Invalid custom Y ticks for {context}") from error
+        if not ticks or not all(math.isfinite(value) for value in ticks):
+            raise ValueError(f"Custom Y ticks for {context} must be finite and nonempty")
+        if any(left >= right for left, right in zip(ticks, ticks[1:])):
+            raise ValueError(f"Custom Y ticks for {context} must be strictly increasing")
+        tolerance = 1e-10 * max(1.0, abs(lower), abs(upper))
+        if ticks[0] < lower - tolerance or ticks[-1] > upper + tolerance:
+            raise ValueError(f"Custom Y ticks for {context} must stay within the Y range")
+        return ticks
 
     @classmethod
     def _load_runtime_raw_csv(cls, path: str, sweep: str):
@@ -870,13 +1016,17 @@ if __name__ == "__main__":
 
     # Optional dataset selector, e.g.:
     #   python ChartGenerator.py SmallScale
-    requested_datasets = {arg.lower() for arg in sys.argv[1:]}
-    valid_datasets = {name.lower() for name in datasets}
-    unknown_datasets = requested_datasets - valid_datasets
+    parser = argparse.ArgumentParser(description="Generate charts and standalone legends.")
+    parser.add_argument("datasets", nargs="*", help="Greedy and/or SmallScale")
+    parser.add_argument("--legend-mode", choices=("separate", "inline"), default="separate")
+    parser.add_argument("--legend-columns", type=int, default=1)
+    args = parser.parse_args()
+    if args.legend_columns < 1:
+        parser.error("--legend-columns must be positive")
+    requested_datasets = {name.lower() for name in args.datasets}
+    unknown_datasets = requested_datasets - {name.lower() for name in datasets}
     if unknown_datasets:
-        choices = ", ".join(datasets)
-        unknown = ", ".join(sorted(unknown_datasets))
-        raise SystemExit(f"Unknown dataset: {unknown}. Choose from: {choices}")
+        parser.error(f"Unknown dataset: {', '.join(sorted(unknown_datasets))}. Choose from: {', '.join(datasets)}")
 
     OVERRIDE_LABEL_EVERY = None
 
@@ -886,4 +1036,9 @@ if __name__ == "__main__":
         for X in dataset_xlabels:
             for Y in dataset_ylabels:
                 fname = f"{Path}_{X}_{Y}.ans"
-                ChartGenerator(fname, X, Y, label_every=OVERRIDE_LABEL_EVERY)
+                ChartGenerator(fname, X, Y, label_every=OVERRIDE_LABEL_EVERY,
+                               legend_mode=args.legend_mode,
+                               legend_columns=args.legend_columns)
+
+    if args.legend_mode == "separate":
+        ChartGenerator.export_shared_legend(args.legend_columns)

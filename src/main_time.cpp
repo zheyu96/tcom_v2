@@ -9,6 +9,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <limits>
 #include <numeric>
 #include <set>
 #include <sstream>
@@ -73,6 +74,7 @@ constexpr int MAIN_TIME_THREADS = 1;
 const string REQUEST_COUNT = "request_cnt";
 const string FIDELITY_THRESHOLD = "fidelity_threshold";
 const string TIME_LIMIT = "time_limit";
+const string AVG_MEMORY = "avg_memory";
 const vector<string> ALL_ALGORITHMS{
     "ZFA_UB", "ZFA", "ZFA2", "MyAlgo1", "MyAlgo3",
     "EFiRAP", "EFiRAP_longtime"};
@@ -82,10 +84,11 @@ struct Config {
         "../data/input/" RUNTIME_BENCHMARK_INPUT_STEM "_round_{}.input";
     string output_directory = "../data/ans";
     string python_command = "python3";
-    vector<string> sweeps{REQUEST_COUNT, FIDELITY_THRESHOLD, TIME_LIMIT};
+    vector<string> sweeps{REQUEST_COUNT, FIDELITY_THRESHOLD, TIME_LIMIT, AVG_MEMORY};
     vector<double> request_counts{80, 100, 120, 140, 160};
     vector<double> fidelity_thresholds{0.70, 0.75, 0.80, 0.85, 0.90};
     vector<double> time_limits{7, 9, 11, 13, 15, 17};
+    vector<double> avg_memories{4, 6, 8, 10, 12, 14, 16, 20};
     vector<string> algorithms = ALL_ALGORITHMS;
     int instances = 5;
     int repetitions = 3;
@@ -104,6 +107,7 @@ struct Config {
 
 struct ExperimentSettings {
     int request_count = 100;
+    int avg_memory = 10;
     int time_limit = 13;
     double fidelity_threshold = 0.80;
 };
@@ -225,6 +229,9 @@ string canonical_sweep_name(const string& value) {
     if(name == "time" || name == "t" || name == TIME_LIMIT) {
         return TIME_LIMIT;
     }
+    if(name == "memory" || name == "avg-memory" || name == AVG_MEMORY) {
+        return AVG_MEMORY;
+    }
     throw invalid_argument("unknown sweep: " + value);
 }
 
@@ -258,14 +265,15 @@ void print_usage(const char* executable) {
     cout
         << "Usage: " << executable << " [options]\n\n"
         << "Measures run() runtime while independently sweeping request_cnt,\n"
-        << "fidelity_threshold, and time_limit. Graph generation, request\n"
+        << "fidelity_threshold, time_limit, and avg_memory. Graph generation, request\n"
         << "generation, path finding, constructors, and result I/O are outside\n"
         << "the timed region.\n\n"
         << "Options:\n"
-        << "  --sweeps LIST              request_cnt,fidelity_threshold,time_limit\n"
+        << "  --sweeps LIST              request_cnt,fidelity_threshold,time_limit,avg_memory\n"
         << "  --request-counts LIST      Default: 80,100,120,140,160\n"
         << "  --fidelity-thresholds LIST Default: 0.70,0.75,0.80,0.85,0.90\n"
         << "  --time-limits LIST         Default: 7,9,11,13,15,17\n"
+        << "  --avg-memories LIST        Default: 4,6,8,10,12,14,16,20\n"
         << "  --algorithms LIST          ZFA_UB,ZFA,ZFA2,MyAlgo1,MyAlgo3,\n"
         << "                             EFiRAP,EFiRAP_longtime\n"
         << "  --instances N              Seeded graph instances (default: 5)\n"
@@ -316,6 +324,8 @@ Config parse_arguments(int argc, char** argv) {
                 parse_number_list(require_value(index, option), option);
         } else if(option == "--time-limits") {
             config.time_limits = parse_number_list(require_value(index, option), option);
+        } else if(option == "--avg-memories") {
+            config.avg_memories = parse_number_list(require_value(index, option), option);
         } else if(option == "--algorithms") {
             config.algorithms.clear();
             for(const string& name : split(require_value(index, option), ',')) {
@@ -394,6 +404,11 @@ Config parse_arguments(int argc, char** argv) {
             throw invalid_argument("fidelity thresholds must be in (0.25, 1]");
         }
     }
+    for(double value : config.avg_memories) {
+        if(value < 1 || value != floor(value) || value > numeric_limits<int>::max()) {
+            throw invalid_argument("average memory values must be positive integers within int range");
+        }
+    }
     for(double value : config.time_limits) {
         if(value < 2 || value != floor(value)) {
             throw invalid_argument("time limits must be integers of at least 2");
@@ -426,12 +441,13 @@ string input_path_for(const Config& config, int instance) {
 Graph load_graph(
     const string& input_file,
     int time_limit,
-    double fidelity_threshold) {
+    double fidelity_threshold,
+    int avg_memory = 10) {
     return Graph(
         input_file,
         time_limit,
         0.9,             // swapping probability
-        10,              // average memory
+        avg_memory,      // average memory plus fixed per-node input offsets
         0.80,            // minimum initial fidelity
         0.99,            // maximum initial fidelity
         fidelity_threshold,
@@ -647,6 +663,7 @@ vector<double> values_for_sweep(const Config& config, const string& sweep) {
     if(sweep == REQUEST_COUNT) return config.request_counts;
     if(sweep == FIDELITY_THRESHOLD) return config.fidelity_thresholds;
     if(sweep == TIME_LIMIT) return config.time_limits;
+    if(sweep == AVG_MEMORY) return config.avg_memories;
     throw invalid_argument("unknown sweep: " + sweep);
 }
 
@@ -655,6 +672,7 @@ ExperimentSettings settings_for(const string& sweep, double value) {
     if(sweep == REQUEST_COUNT) settings.request_count = (int)value;
     else if(sweep == FIDELITY_THRESHOLD) settings.fidelity_threshold = value;
     else if(sweep == TIME_LIMIT) settings.time_limit = (int)value;
+    else if(sweep == AVG_MEMORY) settings.avg_memory = (int)value;
     else throw invalid_argument("unknown sweep: " + sweep);
     return settings;
 }
@@ -787,7 +805,7 @@ int main(int argc, char** argv) {
                       "time_limit,instance,repetition,algorithm,epsilon,"
                       "bucket_eps,threads,run_seconds,fidelity_gain,succ_request_cnt,"
                       "actual_req_cnt,purification_rounds,oracle_calls,dual_updates,"
-                      "dp_paths,oracle_seconds,dp_seconds,peak_candidates,peak_labels,oracle_reuse,reuse_cost_growth\n";
+                      "dp_paths,oracle_seconds,dp_seconds,peak_candidates,peak_labels,oracle_reuse,reuse_cost_growth,avg_memory\n";
         raw_output << fixed << setprecision(9);
 
         cout << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] algorithm columns:";
@@ -809,7 +827,8 @@ int main(int argc, char** argv) {
                     Graph graph = load_graph(
                         workload.input_file,
                         settings.time_limit,
-                        settings.fidelity_threshold);
+                        settings.fidelity_threshold,
+                        settings.avg_memory);
                     vector<SDpair> requests(
                         workload.request_pool.begin(),
                         workload.request_pool.begin() + settings.request_count);
@@ -846,7 +865,8 @@ int main(int argc, char** argv) {
                                        << sample.dual_updates << ',' << sample.dp_paths << ','
                                        << sample.oracle_seconds << ',' << sample.dp_seconds << ','
                                        << sample.peak_candidates << ',' << sample.peak_labels << ','
-                                       << config.oracle_reuse << ',' << config.reuse_cost_growth << '\n';
+                                       << config.oracle_reuse << ',' << config.reuse_cost_growth << ','
+                                       << settings.avg_memory << '\n';
                             raw_output.flush();
                             cout << '[' << RUNTIME_BENCHMARK_LOG_NAME << "] "
                                  << sweep << '=' << value
