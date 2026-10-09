@@ -23,15 +23,28 @@ void MyAlgo1::variable_initialize() {
     x.resize(requests.size());
     alpha.resize(requests.size(), delta);
     beta.resize(graph.get_num_nodes(), vector<double>(graph.get_time_limit()));
-    oracle_cache.clear();
+    groups.clear();
+    request_group.assign(requests.size(), -1);
+    request_cache.assign(requests.size(), RequestEvaluation{});
     dirty_nodes.assign(graph.get_num_nodes(), 0);
-    for(const SDpair& request : requests) {
-        auto inserted = oracle_cache.emplace(request, OracleCache{});
-        if(!inserted.second) continue;
-        set<int> nodes;
-        for(const Path& path : get_paths(request.first, request.second))
-            nodes.insert(path.begin(), path.end());
-        inserted.first->second.nodes.assign(nodes.begin(), nodes.end());
+    dirty_alpha.assign(requests.size(), 0);
+    map<SDpair, int> group_index;
+    for(int i = 0; i < (int)requests.size(); i++) {
+        auto inserted = group_index.emplace(requests[i], (int)groups.size());
+        if(inserted.second) {
+            RequestGroup group;
+            set<int> nodes;
+            for(const Path& path : get_paths(requests[i].first, requests[i].second)) {
+                nodes.insert(path.begin(), path.end());
+                PathEvaluation evaluation;
+                evaluation.probability = graph.path_Pr(path);
+                group.paths.push_back(std::move(evaluation));
+            }
+            group.nodes.assign(nodes.begin(), nodes.end());
+            groups.push_back(std::move(group));
+        }
+        request_group[i] = inserted.first->second;
+        groups[request_group[i]].request_indices.push_back(i);
     }
 
     for(int i = 0; i < graph.get_num_nodes(); i++) {
@@ -42,45 +55,70 @@ void MyAlgo1::variable_initialize() {
     }
 }
 Shape_vector MyAlgo1::separation_oracle() {
-    // Every path for a pair depends only on its endpoint/path-node betas.
-    // Alpha is part of the cache key; never reuse a score at another alpha.
-    for(auto& entry : oracle_cache) {
-        for(int node : entry.second.nodes) {
-            if(dirty_nodes[node]) {
-                entry.second.evaluations.clear();
-                break;
-            }
+    // A group becomes stale when a node on its paths or the alpha of one of
+    // its requests changed; staleness persists until it is recomputed.
+    for(RequestGroup& group : groups) {
+        if(group.stale) continue;
+        for(int node : group.nodes) {
+            if(dirty_nodes[node]) { group.stale = true; break; }
+        }
+        for(int i : group.request_indices) {
+            if(group.stale) break;
+            if(dirty_alpha[i]) group.stale = true;
         }
     }
     fill(dirty_nodes.begin(), dirty_nodes.end(), 0);
+    fill(dirty_alpha.begin(), dirty_alpha.end(), 0);
+
+    // The DP is an exact minimum over sums of betas, and alpha and beta only
+    // grow, so a stale group's previous value is a lower bound on its current
+    // value. Stale groups are recomputed in bound order until none can beat
+    // (or tie) the best current value, which retains the request-order tie
+    // rule of the eager oracle.
     Shape_vector min_shape;
-    double min_value = INF;
-    for(int i = 0; i < (int)requests.size(); i++) {
-        int src = requests[i].first, dst = requests[i].second;
-        // cerr << "[MyAlgo1] " << "path len = " << graph.get_path(src, dst).size() << endl;
-        auto& evaluations = oracle_cache.at(requests[i]).evaluations;
-        auto found = evaluations.find(alpha[i]);
-        if(found == evaluations.end()) {
-            found = evaluations.emplace(
-                alpha[i], find_min_shape(src, dst, alpha[i])).first;
+    while(true) {
+        double min_value = INF;
+        int min_request = -1;
+        for(int i = 0; i < (int)requests.size(); i++) {
+            if(groups[request_group[i]].stale) continue;
+            if(request_cache[i].value < min_value) {
+                min_value = request_cache[i].value;
+                min_request = i;
+            }
         }
-        const auto& result = found->second;
-        const Shape_vector& shape = result.first;
-        double value = result.second;
-        if(value < min_value) {
-            min_shape = shape;
-            min_value = value;
+
+        int next = -1;
+        for(int g = 0; g < (int)groups.size(); g++) {
+            const RequestGroup& group = groups[g];
+            if(!group.stale) continue;
+            if(group.lower_bound >= 0 &&
+               (group.lower_bound >= INF || group.lower_bound > min_value))
+                continue;
+            if(next == -1 || group.lower_bound < groups[next].lower_bound)
+                next = g;
         }
-        // cerr << "[MyAlgo1] " << "find shape" << endl;
+        if(next == -1) {
+            if(min_request >= 0) min_shape = request_cache[min_request].shape;
+            break;
+        }
+
+        RequestGroup& group = groups[next];
+        recompute_group(group);
+        double bound = INF;
+        for(int i : group.request_indices) {
+            request_cache[i] = evaluate_group(group, alpha[i]);
+            bound = min(bound, request_cache[i].value);
+        }
+        group.lower_bound = bound;
+        group.stale = false;
     }
     return min_shape;
 }
-pair<Shape_vector, double> MyAlgo1::find_min_shape(int src, int dst, double alp) {
-    const vector<Path>& paths = get_paths(src, dst);
-    
-    Shape_vector best_shape;
-    double best_cost = INF;
-    for(const Path& path : paths) {
+void MyAlgo1::recompute_group(RequestGroup& group) {
+    const SDpair& request = requests[group.request_indices.front()];
+    const vector<Path>& paths = get_paths(request.first, request.second);
+    for(int p = 0; p < (int)paths.size(); p++) {
+        const Path& path = paths[p];
         dp.resize(path.size());
         par.resize(path.size());
         caled.resize(path.size());
@@ -95,12 +133,26 @@ pair<Shape_vector, double> MyAlgo1::find_min_shape(int src, int dst, double alp)
             }
         }
 
+        PathEvaluation& evaluation = group.paths[p];
+        evaluation.cost.assign(time_limit, INF);
+        for(int t = 0; t < time_limit; t++)
+            evaluation.cost[t] = recursion_calculate_min_shape(0, path.size() - 1, t, path);
+        // Keep the parents so only shapes that are actually selected are
+        // backtracked; the scalar DP is cheaper than backtracking every slot.
+        evaluation.par = par;
+        evaluation.shape.assign(time_limit, Shape_vector{});
+        evaluation.has_shape.assign(time_limit, 0);
+    }
+}
+MyAlgo1::RequestEvaluation MyAlgo1::evaluate_group(RequestGroup& group, double alp) {
+    RequestEvaluation best_evaluation;
+    double best_cost = INF;
+    for(int p = 0; p < (int)group.paths.size(); p++) {
+        PathEvaluation& evaluation = group.paths[p];
         double best = INF;
         int best_time = -1;
-        const double path_probability = graph.path_Pr(path);
         for(int t = 0; t < time_limit; t++) {
-            double result = recursion_calculate_min_shape(0, path.size() - 1, t, path);
-            result = (result + alp) / path_probability;
+            double result = (evaluation.cost[t] + alp) / evaluation.probability;
             if(best > result) {
                 best = result;
                 best_time = t;
@@ -110,13 +162,23 @@ pair<Shape_vector, double> MyAlgo1::find_min_shape(int src, int dst, double alp)
         if(best_time == -1) continue;
 
         if(best < best_cost) {
-            best_shape = recursion_find_shape(0, (int)path.size() - 1, best_time, path);
+            if(!evaluation.has_shape[best_time]) {
+                const SDpair& request = requests[group.request_indices.front()];
+                const Path& path = get_paths(request.first, request.second)[p];
+                par.swap(evaluation.par);
+                evaluation.shape[best_time] =
+                    recursion_find_shape(0, (int)path.size() - 1, best_time, path);
+                par.swap(evaluation.par);
+                evaluation.has_shape[best_time] = 1;
+            }
+            best_evaluation.shape = evaluation.shape[best_time];
             best_cost = best;
         }
     }
 
     if(best_cost == INF) return {{}, INF};
-    return {best_shape, best_cost};
+    best_evaluation.value = best_cost;
+    return best_evaluation;
 }
 double MyAlgo1::recursion_calculate_min_shape(int left, int right, int t, const vector<int> &path) {
     if(t <= 0) return INF;
@@ -239,35 +301,48 @@ void MyAlgo1::run() {
             }
             if(q <= 1e-10) break;
 
-            int request_index = -1;
-            for(int i = 0; i < (int)requests.size(); i++) {
-                if(requests[i] == make_pair(shape.front().first, shape.back().first)) {
-                    if(request_index == -1 || alpha[request_index] > alpha[i]) {
-                        request_index = i;
-                    }
+            // Node-time demand of this shape; reused by every dual update.
+            map<pair<int, int>, int> total_need;
+            for(int i = 0; i < (int)shape.size(); i++) {
+                for(pair<int, int> rng : shape[i].second) {
+                    for(int t = rng.first; t <= rng.second; t++)
+                        total_need[{shape[i].first, t}]++;
                 }
             }
 
-            x[request_index][shape] += q;
-        
-            double ori = alpha[request_index];
-            alpha[request_index] = alpha[request_index] * (1 + epsilon * q);
-            obj += (alpha[request_index] - ori);
-
-            for(int i = 0; i < (int)shape.size(); i++) {
-                map<int, int> need_amount; // time to amount
-                for(pair<int, int> rng : shape[i].second) {
-                    int left = rng.first, right = rng.second;
-                    for(int t = left; t <= right; t++) {
-                        need_amount[t]++;
+            // Reuse this schedule while its dual cost stays close to the
+            // initial cost, exactly as WPFA does.
+            double initial_cost = 0;
+            for(int reuse = 0; reuse < oracle_reuse && obj < 1.0; ++reuse) {
+                int request_index = -1;
+                for(int i = 0; i < (int)requests.size(); i++) {
+                    if(requests[i] == make_pair(shape.front().first, shape.back().first)) {
+                        if(request_index == -1 || alpha[request_index] > alpha[i]) {
+                            request_index = i;
+                        }
                     }
                 }
+                if(request_index == -1) break;
+                if(oracle_reuse > 1) {
+                    double current_cost = alpha[request_index];
+                    for(const auto& slot : total_need)
+                        current_cost += slot.second * beta[slot.first.first][slot.first.second];
+                    if(reuse == 0) initial_cost = current_cost;
+                    // Heuristic guard; this does not bound final rounded quality.
+                    else if(current_cost > initial_cost * (1 + reuse_cost_growth)) break;
+                }
 
-                for(pair<int, int> P : need_amount) {
-                    int t = P.first;
-                    int node_id = shape[i].first;
+                x[request_index][shape] += q;
+                dirty_alpha[request_index] = 1;
+
+                double ori = alpha[request_index];
+                alpha[request_index] = alpha[request_index] * (1 + epsilon * q);
+                obj += (alpha[request_index] - ori);
+
+                for(const auto& slot : total_need) {
+                    int node_id = slot.first.first, t = slot.first.second;
                     dirty_nodes[node_id] = 1;
-                    double theta = P.second;
+                    double theta = slot.second;
                     double original = beta[node_id][t];
                     if(graph.get_node_memory_at(node_id, t) == 0) {
                         beta[node_id][t] = INF;

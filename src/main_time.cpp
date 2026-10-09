@@ -311,7 +311,7 @@ void print_usage(const char* executable) {
         << "  --input-pattern PATH       {} is replaced by the instance index\n"
         << "  --output-dir PATH          Existing output directory (default: ../data/ans)\n"
         << "  --python COMMAND           Graph generator command (default: python3)\n"
-        << "  --oracle-reuse N           Maximum updates per Werner oracle (default: 4)\n"
+        << "  --oracle-reuse N           Max dual updates per WPFA/FNPR oracle (default: 4)\n"
         << "  --reuse-cost-growth X      Relative cost drift allowed (default: 0.10)\n"
         << "  --reuse-inputs             Use existing input files\n"
         << "  --show-algorithm-output    Do not suppress algorithm stdout/stderr\n"
@@ -664,6 +664,7 @@ unique_ptr<AlgorithmBase> make_algorithm(
     if(name == "MyAlgo1") {
         auto algorithm = make_unique<MyAlgo1>(graph, requests, paths);
         algorithm->set_epsilon(epsilon);
+        algorithm->set_oracle_reuse(oracle_reuse, reuse_cost_growth);
         return algorithm;
     }
     if(name == "MyAlgo3") {

@@ -244,10 +244,10 @@ class ChartGenerator:
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
         'runtime':{
-            'request_cnt': (0,5,1,1), 'tao': "auto", 'time_limit': (0,5,1,1),
-            'avg_memory': (0,5,1,1), 'mem_vary': "auto", 'topo_vary': "auto",
+            'request_cnt': (0,0.1,0.01,2), 'tao': "auto", 'time_limit': (0,0.1,0.01,2),
+            'avg_memory': (0,0.1,0.01,2), 'mem_vary': "auto", 'topo_vary': "auto",
             'mem_distribution': "auto", 'path_set': "auto",
-            'min_fidelity': "auto", 'fidelity_threshold': (0,5,1,1),
+            'min_fidelity': "auto", 'fidelity_threshold': (0,0.1,0.01,2),
             'swap_prob': "auto", 'hop_count': "auto", 'entangle_time': "auto",
             'entangle_prob': "auto", 'Zmin': "auto", 'time_eta': "auto", 'bucket_eps': "auto"
         },
