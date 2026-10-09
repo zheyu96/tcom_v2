@@ -110,6 +110,7 @@ private:
     // ===== 基本操作（Pareto / 分桶 / 存儲 / 回溯 / 評分） =====
     void pareto_prune_byZ(vector<ZLabel>& cand);
     void bucket_by_ZP(vector<ZLabel>& cand);
+    void pareto_prune_ZPB(vector<ZLabel>& cand);
 
     Shape_vector backtrack_shape(const ZLabel& leaf, const vector<int>& path,
                                  vector<int>& out_purify_rounds,

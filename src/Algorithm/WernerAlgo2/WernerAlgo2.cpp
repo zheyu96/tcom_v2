@@ -542,9 +542,43 @@ void WernerAlgo2::bucket_by_ZP(vector<ZLabel>& cand) {
     }
     //pareto_prune_byZ(bucketed);
     sort(bucketed.begin(), bucketed.end(), [](const ZLabel& x, const ZLabel& y){
-        return x.Z < y.Z;
+        if(x.Z != y.Z) return x.Z < y.Z;
+        if(x.P != y.P) return x.P > y.P;
+        return x.B < y.B;
     });
+    pareto_prune_ZPB(bucketed);
     cand.swap(bucketed);
+}
+
+// Removes labels dominated in (Z, P, B): another label has Z' <= Z, P' >= P
+// and B' <= B. CONT, MERGE and the terminal score (alpha+B)exp(Z^2-P) are all
+// monotone in these three values, so a dominated label can never lead to a
+// strictly better schedule. Input must be sorted by Z ascending.
+void WernerAlgo2::pareto_prune_ZPB(vector<ZLabel>& cand) {
+    // Staircase of kept (P, B) points: sorted by P ascending with B strictly
+    // increasing, i.e. more success probability always costs more dual cost.
+    struct Point { double P, B; };
+    thread_local vector<Point> stairs;
+    stairs.clear();
+    size_t kept = 0;
+    for(size_t index = 0; index < cand.size(); ++index) {
+        const double P = cand[index].P, B = cand[index].B;
+        // First point with P' >= P has the smallest B among all such points.
+        auto it = lower_bound(stairs.begin(), stairs.end(), P,
+            [](const Point& point, double value) { return point.P < value; });
+        if(it != stairs.end() && it->B <= B) continue;
+        // Points with P' <= P and B' >= B are now dominated in (P, B).
+        auto first = it;
+        if(first != stairs.end() && first->P == P) ++first;
+        auto erase_begin = it;
+        while(erase_begin != stairs.begin() && prev(erase_begin)->B >= B)
+            --erase_begin;
+        it = stairs.erase(erase_begin, first);
+        stairs.insert(it, Point{P, B});
+        if(kept != index) cand[kept] = std::move(cand[index]);
+        ++kept;
+    }
+    cand.resize(kept);
 }
 
 Shape_vector WernerAlgo2::backtrack_shape(
